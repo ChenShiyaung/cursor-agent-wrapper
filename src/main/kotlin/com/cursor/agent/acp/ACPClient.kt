@@ -15,7 +15,9 @@ class ACPClient(
     private val agentPath: String,
     private val apiKey: String? = null,
     private val authToken: String? = null,
-    private val endpoint: String? = null
+    private val endpoint: String? = null,
+    private val resumeChatId: String? = null,
+    private val continueSession: Boolean = false
 ) {
     private val log = Logger.getInstance(ACPClient::class.java)
     private val gson = Gson()
@@ -51,7 +53,16 @@ class ACPClient(
             apiKey?.let { command.addAll(listOf("--api-key", it)) }
             authToken?.let { command.addAll(listOf("--auth-token", it)) }
             endpoint?.let { command.addAll(listOf("-e", it)) }
+
+            if (resumeChatId != null) {
+                command.addAll(listOf("--resume", resumeChatId))
+            } else if (continueSession) {
+                command.add("--continue")
+            }
+
             command.add("acp")
+
+            log.info("Starting ACP agent: ${command.joinToString(" ")}")
 
             val pb = ProcessBuilder(command)
             pb.redirectErrorStream(false)
@@ -76,7 +87,6 @@ class ACPClient(
                 }
             }
 
-            // Read stderr in background for logging
             scope.launch {
                 val errReader = BufferedReader(InputStreamReader(process!!.errorStream, Charsets.UTF_8))
                 try {
@@ -111,6 +121,7 @@ class ACPClient(
     private fun handleMessage(line: String) {
         try {
             val msg = gson.fromJson(line, JsonRpcIncoming::class.java)
+            log.info("Received: id=${msg.id}, method=${msg.method}, isResponse=${msg.isResponse}, isRequest=${msg.isRequest}, isNotification=${msg.isNotification}")
 
             when {
                 msg.isResponse -> {
@@ -181,7 +192,10 @@ class ACPClient(
         when (method) {
             "session/update" -> {
                 val obj = params?.asJsonObject ?: return
-                val update = gson.fromJson(obj.get("update"), SessionUpdateContent::class.java)
+                val updateJson = obj.get("update")
+                val updateType = updateJson?.asJsonObject?.get("sessionUpdate")?.asString
+                log.info("session/update type=$updateType")
+                val update = gson.fromJson(updateJson, SessionUpdateContent::class.java)
                 onSessionUpdate?.invoke(update)
             }
             else -> {
@@ -199,10 +213,12 @@ class ACPClient(
         pendingRequests[id] = deferred
 
         val json = gson.toJson(request) + "\n"
+        log.info("Sending [$method] id=$id, connected=${isConnected}")
         synchronized(this) {
             writer?.write(json)
             writer?.flush()
         }
+        log.info("Sent [$method] id=$id, waiting for response...")
 
         return deferred.await()
     }
@@ -240,8 +256,6 @@ class ACPClient(
         }
     }
 
-    // High-level ACP operations
-
     suspend fun initialize(): JsonElement? {
         return sendRequest("initialize", InitializeParams())
     }
@@ -253,17 +267,6 @@ class ACPClient(
     suspend fun newSession(cwd: String): NewSessionResult? {
         val result = sendRequest("session/new", NewSessionParams(cwd = cwd))
         return result?.let { gson.fromJson(it, NewSessionResult::class.java) }
-    }
-
-    suspend fun loadSession(sessionId: String, cwd: String): LoadSessionResult? {
-        val result = sendRequest("session/load", LoadSessionParams(sessionId = sessionId, cwd = cwd))
-        return result?.let { gson.fromJson(it, LoadSessionResult::class.java) }
-    }
-
-    suspend fun listSessions(cwd: String? = null): ListSessionsResult? {
-        val params = ListSessionsParams(cwd = cwd)
-        val result = sendRequest("session/list", params)
-        return result?.let { gson.fromJson(it, ListSessionsResult::class.java) }
     }
 
     suspend fun prompt(sessionId: String, text: String): PromptResult? {

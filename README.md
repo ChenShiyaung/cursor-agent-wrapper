@@ -5,11 +5,13 @@
 ## 功能
 
 - **AI 对话聊天面板** — 在 IDE 右侧 Tool Window 中与 Cursor Agent 进行对话
+- **JCEF 渲染** — 使用内嵌 Chromium 浏览器渲染 Markdown，支持代码块、表格、列表等完整格式
 - **文件读写** — Agent 可以直接读取和修改项目中的文件
 - **终端执行** — Agent 可以在项目目录中执行 shell 命令
 - **权限控制** — 每次工具调用前请求用户授权，确保安全
-- **流式输出** — 实时显示 Agent 的思考过程和生成内容
-- **Markdown 渲染** — 支持代码高亮、标题、列表等格式
+- **流式输出** — 实时显示 Agent 的思考过程（折叠显示）和生成内容
+- **会话管理** — 自动连接/断开、会话持久化、历史会话浏览（读取 `.cursor/chats` 数据库）
+- **主题适配** — 自动跟随 IDE 深色/浅色主题
 
 ## 前置条件
 
@@ -71,18 +73,19 @@
 ```
 src/main/kotlin/com/cursor/agent/
 ├── acp/
-│   ├── ACPClient.kt          # ACP JSON-RPC 客户端
+│   ├── ACPClient.kt          # ACP JSON-RPC 客户端（stdio 通信）
 │   ├── ACPModels.kt           # ACP 协议数据模型
 │   └── JsonRpcMessage.kt      # JSON-RPC 消息定义
 ├── services/
-│   └── AgentSessionManager.kt # 会话管理 & IDE 功能桥接
+│   ├── AgentSessionManager.kt # 会话管理 & IDE 功能桥接
+│   └── ChatHistoryService.kt  # Cursor 本地聊天历史读取（SQLite）
 ├── settings/
 │   ├── AgentSettings.kt       # 持久化设置
 │   └── AgentSettingsConfigurable.kt # 设置 UI
 └── ui/
-    ├── AgentChatPanel.kt      # 聊天面板 UI
+    ├── AgentChatPanel.kt      # 聊天面板 UI + JCEF/JTextPane 渲染
     ├── AgentToolWindowFactory.kt # Tool Window 工厂
-    └── MessageRenderer.kt     # Markdown 渲染器
+    └── MessageRenderer.kt     # Markdown → HTML 转换（org.intellij.markdown）
 ```
 
 ### 核心流程
@@ -107,6 +110,17 @@ User Input → AgentChatPanel → AgentSessionManager → ACPClient → agent ac
 - `fs.readTextFile` — 读取文件内容
 - `fs.writeTextFile` — 写入文件内容
 - `terminal` — 创建/管理终端进程
+
+## TODO
+
+- [ ] **模型能力切换** — 支持在对话中切换不同的 AI 模型（如 GPT-4o、Claude 等）
+- [ ] **图片上传** — 支持在对话中上传图片，实现多模态交互
+- [ ] **模型计费 / Tokens 查询** — 显示每次对话的 token 用量和费用估算
+- [ ] **滚动条样式优化** — JCEF 渲染区域自定义滚动条样式，适配 IDE 主题
+- [ ] **代码块语法高亮** — 引入 highlight.js 或 Prism.js 实现代码块语法着色
+- [ ] **消息复制** — 支持一键复制 Agent 回复内容
+- [ ] **会话导出** — 将对话内容导出为 Markdown 文件
+- [ ] **会话删除** — 删除不需要的会话文件
 
 ## License
 

@@ -16,6 +16,7 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         var authToken: String = "",
         var endpoint: String = "",
         var autoApprovePermissions: Boolean = false,
+        var autoConnect: Boolean = true,
         var defaultMode: String = "agent",
         var lastSessionId: String = "",
         var lastSessionCwd: String = "",

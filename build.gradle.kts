@@ -23,7 +23,7 @@ dependencies {
 
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-    implementation("com.vladsch.flexmark:flexmark-all:0.64.8")
+    implementation("org.xerial:sqlite-jdbc:3.49.0.0")
 }
 
 kotlin {

@@ -5,6 +5,7 @@ import com.cursor.agent.settings.AgentSettings
 import com.google.gson.JsonObject
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
@@ -15,7 +16,7 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 @Service(Service.Level.PROJECT)
-class AgentSessionManager(private val project: Project) {
+class AgentSessionManager(private val project: Project) : Disposable {
     private val log = Logger.getInstance(AgentSessionManager::class.java)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -27,23 +28,18 @@ class AgentSessionManager(private val project: Project) {
     private var terminalIdCounter = 0
 
     var onMessageChunk: ((String) -> Unit)? = null
+    var onThoughtChunk: ((String) -> Unit)? = null
     var onToolCallUpdate: ((ToolCallInfo) -> Unit)? = null
     var onStatusChanged: ((AgentStatus) -> Unit)? = null
     var onPermissionNeeded: ((Int, String, String, (Boolean) -> Unit) -> Unit)? = null
     var onPromptFinished: ((String) -> Unit)? = null
-    var onSessionRestored: ((String) -> Unit)? = null
 
     fun saveChatHistory(html: String) {
-        val settings = AgentSettings.getInstance()
-        settings.state.chatHistory = html
+        AgentSettings.getInstance().state.chatHistory = html
     }
 
     fun loadChatHistory(): String {
         return AgentSettings.getInstance().state.chatHistory
-    }
-
-    fun getLastSessionId(): String {
-        return AgentSettings.getInstance().state.lastSessionId
     }
 
     val status: AgentStatus get() = when {
@@ -53,17 +49,21 @@ class AgentSessionManager(private val project: Project) {
         else -> AgentStatus.READY
     }
 
-    fun connect(resumeSessionId: String? = null) {
+    fun connect() {
         scope.launch {
             try {
                 onStatusChanged?.invoke(AgentStatus.CONNECTING)
 
                 val settings = AgentSettings.getInstance().state
+                val lastId = settings.lastSessionId.ifEmpty { null }
+
                 val client = ACPClient(
                     agentPath = settings.agentPath,
                     apiKey = settings.apiKey.ifEmpty { null },
                     authToken = settings.authToken.ifEmpty { null },
-                    endpoint = settings.endpoint.ifEmpty { null }
+                    endpoint = settings.endpoint.ifEmpty { null },
+                    resumeChatId = lastId,
+                    continueSession = lastId == null
                 )
 
                 setupClientHandlers(client)
@@ -86,27 +86,11 @@ class AgentSessionManager(private val project: Project) {
                 onStatusChanged?.invoke(AgentStatus.CONNECTED)
 
                 val cwd = project.basePath ?: System.getProperty("user.dir")
-                val targetSessionId = resumeSessionId ?: settings.lastSessionId.ifEmpty { null }
-
-                if (targetSessionId != null) {
-                    try {
-                        val loadResult = client.loadSession(targetSessionId, cwd)
-                        if (loadResult != null) {
-                            sessionId = targetSessionId
-                            log.info("Session restored: $targetSessionId")
-                            onStatusChanged?.invoke(AgentStatus.READY)
-                            onSessionRestored?.invoke(targetSessionId)
-                            return@launch
-                        }
-                    } catch (e: ACPException) {
-                        log.warn("Failed to load previous session ($targetSessionId), creating new one: ${e.message}")
-                    }
-                }
-
                 val result = client.newSession(cwd)
                 if (result != null) {
                     sessionId = result.sessionId
-                    saveSessionInfo(result.sessionId, cwd)
+                    settings.lastSessionId = result.sessionId
+                    settings.lastSessionCwd = cwd
                     log.info("Session created: ${result.sessionId}")
                     onStatusChanged?.invoke(AgentStatus.READY)
                 } else {
@@ -124,14 +108,12 @@ class AgentSessionManager(private val project: Project) {
         }
     }
 
-    private fun saveSessionInfo(sessionId: String, cwd: String) {
-        val settings = AgentSettings.getInstance()
-        settings.state.lastSessionId = sessionId
-        settings.state.lastSessionCwd = cwd
-    }
-
     fun disconnect() {
-        acpClient?.destroy()
+        try {
+            acpClient?.destroy()
+        } catch (e: Exception) {
+            log.warn("Error destroying ACP client", e)
+        }
         acpClient = null
         sessionId = null
         isInitialized = false
@@ -143,15 +125,21 @@ class AgentSessionManager(private val project: Project) {
 
     fun sendPrompt(text: String) {
         val sid = sessionId ?: run {
+            log.warn("sendPrompt: No active session")
             notifyError("No active session. Please connect first.")
             return
         }
-        val client = acpClient ?: return
+        val client = acpClient ?: run {
+            log.warn("sendPrompt: No ACP client")
+            return
+        }
 
+        log.info("sendPrompt: sending to session $sid, text length=${text.length}")
         scope.launch {
             try {
                 onStatusChanged?.invoke(AgentStatus.THINKING)
                 val result = client.prompt(sid, text)
+                log.info("sendPrompt: completed, stopReason=${result?.stopReason}")
                 onPromptFinished?.invoke(result?.stopReason ?: "unknown")
                 onStatusChanged?.invoke(AgentStatus.READY)
             } catch (e: ACPException) {
@@ -177,23 +165,16 @@ class AgentSessionManager(private val project: Project) {
         client.onSessionUpdate = { update ->
             when (update.sessionUpdate) {
                 "agent_message_chunk" -> {
-                    update.content?.text?.let { onMessageChunk?.invoke(it) }
+                    val text = update.content?.text
+                    log.info("agent_message_chunk: text=${text?.take(50)}, callback=${onMessageChunk != null}")
+                    text?.let { onMessageChunk?.invoke(it) }
                 }
-                "tool_call" -> {
-                    val tcId = update.toolCallId
-                    if (tcId != null) {
-                        val info = ToolCallInfo(
-                            toolCallId = tcId,
-                            title = update.title,
-                            kind = update.kind,
-                            status = update.status,
-                            input = update.input
-                        )
-                        toolCallCache[tcId] = info
-                        onToolCallUpdate?.invoke(info)
-                    }
+                "agent_thought_chunk" -> {
+                    val text = update.content?.text
+                    log.info("agent_thought_chunk: text=${text?.take(50)}, callback=${onThoughtChunk != null}")
+                    text?.let { onThoughtChunk?.invoke(it) }
                 }
-                "tool_call_update" -> {
+                "tool_call", "tool_call_update" -> {
                     val tcId = update.toolCallId
                     if (tcId != null) {
                         val cached = toolCallCache[tcId]
@@ -235,33 +216,13 @@ class AgentSessionManager(private val project: Project) {
             }
         }
 
-        client.onReadFileRequest = { id, req ->
-            handleReadFile(client, id, req)
-        }
-
-        client.onWriteFileRequest = { id, req ->
-            handleWriteFile(client, id, req)
-        }
-
-        client.onCreateTerminalRequest = { id, req ->
-            handleCreateTerminal(client, id, req)
-        }
-
-        client.onTerminalOutputRequest = { id, req ->
-            handleTerminalOutput(client, id, req)
-        }
-
-        client.onWaitForExitRequest = { id, req ->
-            handleWaitForExit(client, id, req)
-        }
-
-        client.onReleaseTerminalRequest = { id, req ->
-            handleReleaseTerminal(client, id, req)
-        }
-
-        client.onKillTerminalRequest = { id, req ->
-            handleKillTerminal(client, id, req)
-        }
+        client.onReadFileRequest = { id, req -> handleReadFile(client, id, req) }
+        client.onWriteFileRequest = { id, req -> handleWriteFile(client, id, req) }
+        client.onCreateTerminalRequest = { id, req -> handleCreateTerminal(client, id, req) }
+        client.onTerminalOutputRequest = { id, req -> handleTerminalOutput(client, id, req) }
+        client.onWaitForExitRequest = { id, req -> handleWaitForExit(client, id, req) }
+        client.onReleaseTerminalRequest = { id, req -> handleReleaseTerminal(client, id, req) }
+        client.onKillTerminalRequest = { id, req -> handleKillTerminal(client, id, req) }
 
         client.onDisconnected = {
             isInitialized = false
@@ -269,8 +230,6 @@ class AgentSessionManager(private val project: Project) {
             onStatusChanged?.invoke(AgentStatus.DISCONNECTED)
         }
     }
-
-    // --- File operations ---
 
     private fun handleReadFile(client: ACPClient, id: Int, req: ReadTextFileRequest) {
         ApplicationManager.getApplication().runReadAction {
@@ -285,10 +244,7 @@ class AgentSessionManager(private val project: Project) {
                 val limit = req.limit ?: lines.size
                 val selectedLines = lines.drop(startLine.coerceAtLeast(0)).take(limit)
                 val content = selectedLines.joinToString("\n")
-
-                val result = JsonObject().apply {
-                    addProperty("content", content)
-                }
+                val result = JsonObject().apply { addProperty("content", content) }
                 client.respond(id, result)
             } catch (e: Exception) {
                 client.respondError(id, -32000, "Failed to read file: ${e.message}")
@@ -303,9 +259,7 @@ class AgentSessionManager(private val project: Project) {
                     val file = File(req.path)
                     file.parentFile?.mkdirs()
                     file.writeText(req.content)
-
                     LocalFileSystem.getInstance().refreshAndFindFileByPath(req.path)
-
                     client.respond(id, JsonObject())
                 } catch (e: Exception) {
                     client.respondError(id, -32000, "Failed to write file: ${e.message}")
@@ -314,14 +268,11 @@ class AgentSessionManager(private val project: Project) {
         }
     }
 
-    // --- Terminal operations ---
-
     private fun handleCreateTerminal(client: ACPClient, id: Int, req: CreateTerminalRequest) {
         scope.launch {
             try {
                 val termId = "term_${++terminalIdCounter}"
                 val command = mutableListOf<String>()
-
                 val isWindows = System.getProperty("os.name").lowercase().contains("win")
                 if (isWindows) {
                     command.addAll(listOf("cmd", "/c", req.command))
@@ -345,17 +296,13 @@ class AgentSessionManager(private val project: Project) {
                         output.append(line).append("\n")
                         val limit = req.outputBytesLimit
                         if (limit != null && output.length > limit) {
-                            val excess = output.length - limit
-                            output.delete(0, excess)
+                            output.delete(0, output.length - limit)
                         }
                     }
                 }
 
                 terminals[termId] = TerminalSession(process, output, outputJob)
-
-                val result = JsonObject().apply {
-                    addProperty("terminalId", termId)
-                }
+                val result = JsonObject().apply { addProperty("terminalId", termId) }
                 client.respond(id, result)
             } catch (e: Exception) {
                 client.respondError(id, -32000, "Failed to create terminal: ${e.message}")
@@ -373,10 +320,7 @@ class AgentSessionManager(private val project: Project) {
             addProperty("output", session.output.toString())
             addProperty("truncated", false)
             if (!session.process!!.isAlive) {
-                val exitObj = JsonObject().apply {
-                    addProperty("exitCode", session.process.exitValue())
-                }
-                add("exitStatus", exitObj)
+                add("exitStatus", JsonObject().apply { addProperty("exitCode", session.process.exitValue()) })
             }
         }
         client.respond(id, result)
@@ -391,10 +335,7 @@ class AgentSessionManager(private val project: Project) {
             }
             val exitCode = session.process?.waitFor()
             session.outputJob?.join()
-            val result = JsonObject().apply {
-                addProperty("exitCode", exitCode)
-            }
-            client.respond(id, result)
+            client.respond(id, JsonObject().apply { addProperty("exitCode", exitCode) })
         }
     }
 
@@ -452,7 +393,7 @@ class AgentSessionManager(private val project: Project) {
         }
     }
 
-    fun dispose() {
+    override fun dispose() {
         disconnect()
         scope.cancel()
     }

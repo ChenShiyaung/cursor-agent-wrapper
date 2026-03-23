@@ -17,12 +17,14 @@ class AgentSettingsConfigurable : Configurable {
     private var authTokenField: JBPasswordField? = null
     private var endpointField: JBTextField? = null
     private var autoApproveBox: JBCheckBox? = null
+    private var autoConnectBox: JBCheckBox? = null
     private var panel: JPanel? = null
 
     override fun getDisplayName(): String = "Cursor Agent"
 
     override fun createComponent(): JComponent {
         agentPathField = TextFieldWithBrowseButton().apply {
+            @Suppress("DEPRECATION")
             addBrowseFolderListener(
                 "Select Agent Binary",
                 "Choose the Cursor agent CLI binary path",
@@ -34,12 +36,14 @@ class AgentSettingsConfigurable : Configurable {
         authTokenField = JBPasswordField()
         endpointField = JBTextField()
         autoApproveBox = JBCheckBox("Auto-approve all tool permissions (not recommended)")
+        autoConnectBox = JBCheckBox("Auto-connect on project open")
 
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("Agent binary path:"), agentPathField!!, 1, false)
             .addLabeledComponent(JBLabel("API Key (CURSOR_API_KEY):"), apiKeyField!!, 1, false)
             .addLabeledComponent(JBLabel("Auth Token (CURSOR_AUTH_TOKEN):"), authTokenField!!, 1, false)
             .addLabeledComponent(JBLabel("API Endpoint:"), endpointField!!, 1, false)
+            .addComponent(autoConnectBox!!, 1)
             .addComponent(autoApproveBox!!, 1)
             .addComponentFillVertically(JPanel(), 0)
             .panel
@@ -53,18 +57,25 @@ class AgentSettingsConfigurable : Configurable {
                 String(apiKeyField?.password ?: charArrayOf()) != settings.apiKey ||
                 String(authTokenField?.password ?: charArrayOf()) != settings.authToken ||
                 endpointField?.text != settings.endpoint ||
-                autoApproveBox?.isSelected != settings.autoApprovePermissions
+                autoApproveBox?.isSelected != settings.autoApprovePermissions ||
+                autoConnectBox?.isSelected != settings.autoConnect
     }
 
     override fun apply() {
         val settings = AgentSettings.getInstance()
+        val old = settings.state
         settings.loadState(
             AgentSettings.State(
                 agentPath = agentPathField?.text ?: "agent",
                 apiKey = String(apiKeyField?.password ?: charArrayOf()),
                 authToken = String(authTokenField?.password ?: charArrayOf()),
                 endpoint = endpointField?.text ?: "",
-                autoApprovePermissions = autoApproveBox?.isSelected ?: false
+                autoApprovePermissions = autoApproveBox?.isSelected ?: false,
+                autoConnect = autoConnectBox?.isSelected ?: true,
+                defaultMode = old.defaultMode,
+                lastSessionId = old.lastSessionId,
+                lastSessionCwd = old.lastSessionCwd,
+                chatHistory = old.chatHistory
             )
         )
     }
@@ -76,6 +87,7 @@ class AgentSettingsConfigurable : Configurable {
         authTokenField?.text = settings.authToken
         endpointField?.text = settings.endpoint
         autoApproveBox?.isSelected = settings.autoApprovePermissions
+        autoConnectBox?.isSelected = settings.autoConnect
     }
 
     override fun disposeUIResources() {
@@ -84,6 +96,7 @@ class AgentSettingsConfigurable : Configurable {
         authTokenField = null
         endpointField = null
         autoApproveBox = null
+        autoConnectBox = null
         panel = null
     }
 }

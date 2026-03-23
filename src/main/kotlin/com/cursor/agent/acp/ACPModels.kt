@@ -38,34 +38,6 @@ data class NewSessionResult(
     val modeState: JsonElement? = null
 )
 
-data class LoadSessionParams(
-    val sessionId: String,
-    val cwd: String? = null,
-    val mcpServers: List<JsonElement> = emptyList()
-)
-
-data class LoadSessionResult(
-    val sessionConfigOptions: List<JsonElement>? = null,
-    val modeState: JsonElement? = null
-)
-
-data class ListSessionsParams(
-    val cwd: String? = null,
-    val cursor: String? = null
-)
-
-data class SessionInfo(
-    val sessionId: String,
-    val cwd: String? = null,
-    val title: String? = null,
-    val createdAt: String? = null,
-    val updatedAt: String? = null
-)
-
-data class ListSessionsResult(
-    val sessions: List<SessionInfo> = emptyList(),
-    val nextCursor: String? = null
-)
 
 data class PromptParams(
     val sessionId: String,
