@@ -1,0 +1,47 @@
+<idea-plugin>
+    <id>com.cursor.agent.deveco</id>
+    <name>Cursor Agent for DevEco</name>
+    <version>1.0.0</version>
+    <vendor email="support@cursor.sh" url="https://cursor.com">Cursor Agent Plugin</vendor>
+
+    <description><![CDATA[
+    Integrates Cursor Agent capabilities into DevEco Studio / IntelliJ IDEA via the Agent Client Protocol (ACP).
+    <br/>
+    <ul>
+        <li>AI-powered code generation and editing</li>
+        <li>Agentic coding with tool calling (file read/write, terminal, search)</li>
+        <li>Streaming chat interface with markdown rendering</li>
+        <li>Permission-based tool execution</li>
+        <li>Session management and conversation history</li>
+    </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window -->
+        <toolWindow id="Cursor Agent"
+                    secondary="true"
+                    anchor="right"
+                    icon="/icons/cursor_agent.svg"
+                    factoryClass="com.cursor.agent.ui.AgentToolWindowFactory"/>
+
+        <!-- Settings -->
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.cursor.agent.settings.AgentSettingsConfigurable"
+                id="com.cursor.agent.settings"
+                displayName="Cursor Agent"/>
+
+        <applicationService
+                serviceImplementation="com.cursor.agent.settings.AgentSettings"/>
+
+        <!-- Project Service -->
+        <projectService
+                serviceImplementation="com.cursor.agent.services.AgentSessionManager"/>
+
+        <notificationGroup id="Cursor Agent"
+                           displayType="BALLOON"
+                           toolWindowId="Cursor Agent"/>
+    </extensions>
+</idea-plugin>
