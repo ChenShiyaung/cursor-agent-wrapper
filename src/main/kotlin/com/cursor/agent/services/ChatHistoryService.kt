@@ -42,14 +42,17 @@ object ChatHistoryService {
     private val chatsDir: File
         get() = File(System.getProperty("user.home"), ".cursor/chats")
 
-    fun listSessions(): List<ChatSession> {
+    fun listSessions(filterWorkspaceHash: String? = null): List<ChatSession> {
         val dir = chatsDir
-        log.info("listSessions: chatsDir=${dir.absolutePath}, exists=${dir.exists()}")
         if (!dir.exists()) return emptyList()
 
         val sessions = mutableListOf<ChatSession>()
-        val workspaceDirs = dir.listFiles { f -> f.isDirectory } ?: return emptyList()
-        log.info("listSessions: ${workspaceDirs.size} workspace dirs")
+        val workspaceDirs = if (filterWorkspaceHash != null) {
+            val target = File(dir, filterWorkspaceHash)
+            if (target.isDirectory) arrayOf(target) else return emptyList()
+        } else {
+            dir.listFiles { f -> f.isDirectory } ?: return emptyList()
+        }
 
         for (wsDir in workspaceDirs) {
             val chatDirs = wsDir.listFiles { f -> f.isDirectory } ?: continue
@@ -58,25 +61,50 @@ object ChatHistoryService {
                 if (!dbFile.exists()) continue
                 try {
                     val session = readSessionMeta(dbFile, wsDir.name)
-                    if (session != null) {
-                        sessions.add(session)
-                        log.info("listSessions: found session ${session.chatId} (${session.displayName})")
-                    } else {
-                        log.info("listSessions: readSessionMeta returned null for ${dbFile.absolutePath}")
-                    }
+                    if (session != null) sessions.add(session)
                 } catch (e: Exception) {
                     log.warn("Failed to read chat DB: ${dbFile.absolutePath}: ${e.message}")
                 }
             }
         }
-
-        log.info("listSessions: total ${sessions.size} sessions found")
         return sessions.sortedByDescending { it.createdAt }
     }
 
     fun readSessionMessages(chatId: String): List<ChatMessage> {
         val dbFile = findDbFile(chatId) ?: return emptyList()
         return readMessages(dbFile)
+    }
+
+    fun readSessionTitle(chatId: String): String? {
+        val dbFile = findDbFile(chatId) ?: return null
+        return try {
+            val url = "jdbc:sqlite:${dbFile.absolutePath}"
+            DriverManager.getConnection(url).use { conn ->
+                val rs = conn.prepareStatement("SELECT value FROM meta WHERE key = '0'").executeQuery()
+                if (!rs.next()) return null
+                val rawValue = rs.getString("value")
+                val jsonStr = if (rawValue.matches(Regex("^[0-9a-fA-F]+$"))) {
+                    String(hexToBytes(rawValue), Charsets.UTF_8)
+                } else rawValue
+                val meta = gson.fromJson(jsonStr, JsonObject::class.java)
+                val name = meta.get("name")?.asString
+                if (!name.isNullOrBlank() && name != "New Agent") name else null
+            }
+        } catch (e: Exception) {
+            log.warn("Failed to read session title for $chatId: ${e.message}")
+            null
+        }
+    }
+
+    fun deleteSession(chatId: String): Boolean {
+        val dbFile = findDbFile(chatId) ?: return false
+        val chatDir = dbFile.parentFile ?: return false
+        return try {
+            chatDir.deleteRecursively()
+        } catch (e: Exception) {
+            log.warn("Failed to delete session dir: ${chatDir.absolutePath}", e)
+            false
+        }
     }
 
     private fun findDbFile(chatId: String): File? {
@@ -96,25 +124,17 @@ object ChatHistoryService {
         DriverManager.getConnection(url).use { conn ->
             val metaStmt = conn.prepareStatement("SELECT value FROM meta WHERE key = '0'")
             val rs = metaStmt.executeQuery()
-            if (!rs.next()) {
-                log.info("readSessionMeta: no meta row for key='0' in ${dbFile.name}")
-                return null
-            }
+            if (!rs.next()) return null
 
             val rawValue = rs.getString("value")
-            log.info("readSessionMeta: rawValue length=${rawValue.length}, isHex=${rawValue.matches(Regex("^[0-9a-fA-F]+$"))}")
             val jsonStr = if (rawValue.matches(Regex("^[0-9a-fA-F]+$"))) {
                 String(hexToBytes(rawValue), Charsets.UTF_8)
             } else {
                 rawValue
             }
-            log.info("readSessionMeta: jsonStr=${jsonStr.take(200)}")
 
             val meta = gson.fromJson(jsonStr, JsonObject::class.java)
-            val chatId = meta.get("agentId")?.asString ?: run {
-                log.info("readSessionMeta: no agentId in meta")
-                return null
-            }
+            val chatId = meta.get("agentId")?.asString ?: return null
             val name = meta.get("name")?.asString ?: ""
             val createdAt = meta.get("createdAt")?.asLong ?: 0
             val model = meta.get("lastUsedModel")?.asString
@@ -177,30 +197,69 @@ object ChatHistoryService {
                     if (role != "user" && role != "assistant") continue
 
                     val content = obj.get("content")
-                    val text = when {
-                        content == null -> continue
-                        content.isJsonPrimitive -> content.asString
-                        content.isJsonArray -> content.asJsonArray
-                            .filter { it.isJsonObject }
-                            .mapNotNull { it.asJsonObject.get("text")?.asString }
-                            .joinToString("")
-                        else -> continue
-                    }
 
                     if (role == "user") {
+                        val text = extractText(content) ?: continue
                         val clean = text.replace(Regex("<[^>]+>"), "").trim()
                         if (clean.isNotBlank() && !clean.startsWith("OS Version:") && !clean.startsWith("[Previous conversation")) {
-                            messages.add(ChatMessage(role, clean))
+                            messages.add(ChatMessage("user", clean))
                         }
                     } else {
-                        if (text.isNotBlank()) {
-                            messages.add(ChatMessage(role, text))
+                        if (content != null && content.isJsonArray) {
+                            val thinking = StringBuilder()
+                            val reply = StringBuilder()
+                            for (block in content.asJsonArray) {
+                                if (!block.isJsonObject) continue
+                                val blockObj = block.asJsonObject
+                                val type = blockObj.get("type")?.asString
+                                val text = blockObj.get("text")?.asString ?: ""
+                                when (type) {
+                                    "thinking", "reasoning" -> thinking.append(text)
+                                    "text" -> {
+                                        val (thinkPart, replyPart) = splitThinkTags(text)
+                                        thinking.append(thinkPart)
+                                        reply.append(replyPart)
+                                    }
+                                }
+                            }
+                            if (thinking.isNotBlank()) {
+                                messages.add(ChatMessage("thought", thinking.toString()))
+                            }
+                            if (reply.isNotBlank()) {
+                                messages.add(ChatMessage("assistant", reply.toString()))
+                            }
+                        } else {
+                            val text = extractText(content) ?: continue
+                            if (text.isNotBlank()) {
+                                val (thinkPart, replyPart) = splitThinkTags(text)
+                                if (thinkPart.isNotBlank()) messages.add(ChatMessage("thought", thinkPart))
+                                if (replyPart.isNotBlank()) messages.add(ChatMessage("assistant", replyPart))
+                            }
                         }
                     }
                 } catch (_: Exception) {}
             }
         }
         return messages
+    }
+
+    private fun splitThinkTags(text: String): Pair<String, String> {
+        val thinkRegex = Regex("<think>([\\s\\S]*?)</think>", RegexOption.DOT_MATCHES_ALL)
+        val thinkParts = thinkRegex.findAll(text).map { it.groupValues[1] }.joinToString("\n")
+        val replyPart = text.replace(thinkRegex, "").trim()
+        return Pair(thinkParts, replyPart)
+    }
+
+    private fun extractText(content: com.google.gson.JsonElement?): String? {
+        return when {
+            content == null -> null
+            content.isJsonPrimitive -> content.asString
+            content.isJsonArray -> content.asJsonArray
+                .filter { it.isJsonObject }
+                .mapNotNull { it.asJsonObject.get("text")?.asString }
+                .joinToString("")
+            else -> null
+        }
     }
 
     private fun hexToBytes(hex: String): ByteArray {

@@ -32,12 +32,20 @@ data class NewSessionParams(
     val mcpServers: List<JsonElement> = emptyList()
 )
 
-data class NewSessionResult(
+data class LoadSessionParams(
     val sessionId: String,
+    val cwd: String,
+    val mcpServers: List<JsonElement> = emptyList()
+)
+
+data class NewSessionResult(
+    val sessionId: String? = null,
     val configOptions: List<ConfigOption>? = null,
     val models: ModelsInfo? = null,
     val modes: ModesInfo? = null
-)
+) {
+    @Transient var resolvedSessionId: String? = null
+}
 
 data class ModelsInfo(
     val currentModelId: String? = null,
@@ -119,7 +127,9 @@ data class SessionUpdateContent(
     val todos: JsonElement? = null,
     val plan: JsonElement? = null,
     // config_option_update
-    val configOptions: List<ConfigOption>? = null
+    val configOptions: List<ConfigOption>? = null,
+    // session_title_update
+    val sessionTitle: String? = null
 )
 
 data class UpdateContent(

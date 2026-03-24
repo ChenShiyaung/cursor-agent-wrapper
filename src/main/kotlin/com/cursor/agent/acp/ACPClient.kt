@@ -15,9 +15,7 @@ class ACPClient(
     private val agentPath: String,
     private val apiKey: String? = null,
     private val authToken: String? = null,
-    private val endpoint: String? = null,
-    private val resumeChatId: String? = null,
-    private val continueSession: Boolean = false
+    private val endpoint: String? = null
 ) {
     private val log = Logger.getInstance(ACPClient::class.java)
     private val gson = Gson()
@@ -53,12 +51,6 @@ class ACPClient(
             apiKey?.let { command.addAll(listOf("--api-key", it)) }
             authToken?.let { command.addAll(listOf("--auth-token", it)) }
             endpoint?.let { command.addAll(listOf("-e", it)) }
-
-            if (resumeChatId != null) {
-                command.addAll(listOf("--resume", resumeChatId))
-            } else if (continueSession) {
-                command.add("--continue")
-            }
 
             command.add("acp")
 
@@ -195,7 +187,9 @@ class ACPClient(
                 val obj = params?.asJsonObject ?: return
                 val updateJson = obj.get("update")
                 val updateType = updateJson?.asJsonObject?.get("sessionUpdate")?.asString
-                log.debug("session/update type=$updateType")
+                if (updateType != "agent_message_chunk" && updateType != "agent_thought_chunk") {
+                    log.info("session/update type=$updateType raw=${updateJson.toString().take(500)}")
+                }
                 val update = gson.fromJson(updateJson, SessionUpdateContent::class.java)
                 onSessionUpdate?.invoke(update)
             }
@@ -214,7 +208,11 @@ class ACPClient(
         pendingRequests[id] = deferred
 
         val json = gson.toJson(request) + "\n"
-        log.debug("Sending [$method] id=$id")
+        if (method.startsWith("session/")) {
+            log.info("Sending [$method] id=$id params=${paramsJson?.toString()?.take(500)}")
+        } else {
+            log.debug("Sending [$method] id=$id")
+        }
         synchronized(this) {
             writer?.write(json)
             writer?.flush()
@@ -256,8 +254,19 @@ class ACPClient(
         }
     }
 
+    var supportsLoadSession: Boolean = false
+        private set
+
     suspend fun initialize(): JsonElement? {
-        return sendRequest("initialize", InitializeParams())
+        val result = sendRequest("initialize", InitializeParams())
+        try {
+            val caps = result?.asJsonObject?.getAsJsonObject("agentCapabilities")
+            supportsLoadSession = caps?.get("loadSession")?.asBoolean == true
+            log.info("initialize result capabilities: loadSession=$supportsLoadSession, raw=${result?.toString()?.take(500)}")
+        } catch (e: Exception) {
+            log.warn("Failed to parse initialize capabilities: ${e.message}")
+        }
+        return result
     }
 
     suspend fun authenticate(): JsonElement? {
@@ -267,6 +276,14 @@ class ACPClient(
     suspend fun newSession(cwd: String): NewSessionResult? {
         val result = sendRequest("session/new", NewSessionParams(cwd = cwd))
         return result?.let { gson.fromJson(it, NewSessionResult::class.java) }
+    }
+
+    suspend fun loadSession(sessionId: String, cwd: String): NewSessionResult? {
+        val result = sendRequest("session/load", LoadSessionParams(sessionId = sessionId, cwd = cwd))
+        if (result == null || result.isJsonNull) {
+            return NewSessionResult(sessionId = null)
+        }
+        return gson.fromJson(result, NewSessionResult::class.java)
     }
 
     suspend fun prompt(sessionId: String, text: String): PromptResult? {

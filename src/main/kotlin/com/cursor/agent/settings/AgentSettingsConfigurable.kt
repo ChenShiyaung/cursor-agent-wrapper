@@ -62,23 +62,13 @@ class AgentSettingsConfigurable : Configurable {
     }
 
     override fun apply() {
-        val settings = AgentSettings.getInstance()
-        val old = settings.state
-        settings.loadState(
-            AgentSettings.State(
-                agentPath = agentPathField?.text ?: "agent",
-                apiKey = String(apiKeyField?.password ?: charArrayOf()),
-                authToken = String(authTokenField?.password ?: charArrayOf()),
-                endpoint = endpointField?.text ?: "",
-                autoApprovePermissions = autoApproveBox?.isSelected ?: false,
-                autoConnect = autoConnectBox?.isSelected ?: true,
-                defaultMode = old.defaultMode,
-                selectedModel = old.selectedModel,
-                lastSessionId = old.lastSessionId,
-                lastSessionCwd = old.lastSessionCwd,
-                chatHistory = old.chatHistory
-            )
-        )
+        val old = AgentSettings.getInstance().state
+        old.agentPath = agentPathField?.text ?: "agent"
+        old.apiKey = String(apiKeyField?.password ?: charArrayOf())
+        old.authToken = String(authTokenField?.password ?: charArrayOf())
+        old.endpoint = endpointField?.text ?: ""
+        old.autoApprovePermissions = autoApproveBox?.isSelected ?: false
+        old.autoConnect = autoConnectBox?.isSelected ?: true
     }
 
     override fun reset() {

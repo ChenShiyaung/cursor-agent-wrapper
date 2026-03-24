@@ -21,7 +21,13 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         var selectedModel: String = "",
         var lastSessionId: String = "",
         var lastSessionCwd: String = "",
-        var chatHistory: String = ""
+        var chatHistory: String = "",
+        var projectSessionIds: MutableMap<String, String> = mutableMapOf(),
+        var projectChatHistories: MutableMap<String, String> = mutableMapOf(),
+        var sessionModels: MutableMap<String, String> = mutableMapOf(),
+        var projectWorkspaceHashes: MutableMap<String, String> = mutableMapOf(),
+        var projectSessionCwds: MutableMap<String, String> = mutableMapOf(),
+        var projectOpenTabs: MutableMap<String, String> = mutableMapOf()
     )
 
     private var myState = State()
