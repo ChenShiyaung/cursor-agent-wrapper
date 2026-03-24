@@ -1,38 +1,46 @@
 # Cursor Agent for DevEco Studio
 
-一个 DevEco Studio / IntelliJ IDEA 插件，通过 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) 将 Cursor Agent 的 AI 编程能力集成到 IDE 中。
+一个 DevEco Studio / IntelliJ IDEA 插件，通过 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) 将 [Cursor Agent](https://cursor.com) 的 AI 编程能力集成到 IDE 中。
+
+插件启动配置的 `agent` CLI 二进制，经 stdio 建立 JSON-RPC 2.0 连接，完成 `initialize → authenticate → session/new (或 session/load) → session/prompt` 的会话流程，让你在 IDE 内直接与 AI Agent 协作编码。
 
 ## 功能
 
-- **多 Tab 聊天面板** — 在 IDE 右侧 Tool Window 中同时管理多个独立会话，每个 Tab 拥有独立的 Agent 连接
-- **JCEF 渲染** — 使用内嵌 Chromium 浏览器渲染 Markdown，支持代码高亮（highlight.js）、一键复制、表格、列表等
-- **模型切换** — 支持在会话内无缝切换 AI 模型（Opus 4.6、Sonnet 4.6、GPT-5.4 等 26 个 ACP 模型）
-- **文件读写** — Agent 可以直接读取和修改项目中的文件
-- **终端执行** — Agent 可以在项目目录中执行 shell 命令
-- **权限控制** — 每次工具调用前请求用户授权，确保安全
-- **流式输出** — 实时显示 Agent 的思考过程（折叠紫色区块）和生成内容
-- **会话持久化** — 重启 IDE 自动恢复上一次打开的 Tab 和历史内容
-- **会话恢复** — 通过 ACP `session/load` 恢复 Agent 上下文记忆（需 Agent 支持）
-- **历史会话** — 浏览并重新打开 `.cursor/chats` 数据库中的本地会话记录
-- **会话删除** — 支持删除会话（含二次确认），同时清理本地 Cursor 数据
-- **代码块增强** — 语法高亮、文件路径点击跳转、ETS/ArkTS 语法支持、一键复制
-- **主题适配** — 自动跟随 IDE 深色/浅色主题（含滚动条、图标、代码高亮配色）
+### 聊天与交互
+- **多 Tab 聊天** — 在 IDE 右侧 Tool Window 中同时管理多个独立会话，每个 Tab 拥有独立的 Agent 连接（独立子进程）
+- **流式输出** — 实时显示 Agent 的思考过程（紫色折叠区块）和生成内容
+- **模型切换** — 通过 `session/set_config_option` 在会话内无缝切换 AI 模型（Claude、GPT、Gemini 等 26+ 个 ACP 模型），无需断开重连
+- **Tab 重命名** — 双击 Tab 标题直接编辑会话名称，自动同步到本地数据库
+
+### Agent 能力
+- **文件读写** — Agent 可以直接读取和修改项目中的文件（`fs.readTextFile` / `fs.writeTextFile`）
+- **终端执行** — Agent 可以在项目目录中创建和管理 shell 子进程（create / output / wait / kill）
+- **权限控制** — 每次工具调用前弹窗请求用户授权，也可在设置中开启自动批准
+- **操作取消** — 支持随时取消正在执行的 Agent 操作
+
+### 渲染与 UI
+- **JCEF 富文本渲染** — 使用内嵌 Chromium 渲染 Markdown，支持 GFM 表格、列表、内联代码等（JTextPane 纯文本作为降级方案）
+- **代码块增强** — highlight.js 语法高亮、一键复制按钮、文件路径点击跳转到 IDE 编辑器
+- **ETS / ArkTS 支持** — 代码块中 `ets`、`arkts` 语言标记自动映射为 TypeScript 高亮
+- **主题适配** — 自动跟随 IDE 深色/浅色主题，包括滚动条、图标、代码高亮配色
+
+### 会话管理
+- **会话持久化** — 重启 IDE 自动恢复上一次打开的 Tab 及历史内容
+- **上下文恢复** — 通过 ACP `session/load` 尝试恢复 Agent 上下文记忆（需 Agent 支持），replay 历史消息由插件静默处理
+- **历史浏览** — 从 `~/.cursor/chats` 本地 SQLite 数据库浏览和重新打开历史会话
+- **会话删除** — 支持删除会话（含二次确认），同时清理本地 Cursor 数据文件
 
 ## 前置条件
 
-1. **Cursor Agent CLI** — 需要安装 Cursor CLI 工具（`agent` 命令）
-   ```bash
-   # 通过 Cursor 安装 CLI
-   # 或从 https://cursor.com/downloads 下载
-   ```
+1. **Cursor Agent CLI** — 需要安装 [Cursor](https://cursor.com/downloads) 并确保 `agent` 命令在 PATH 中可用
 
-2. **认证** — 运行以下命令进行登录：
+2. **认证** — 运行以下命令登录：
    ```bash
    agent login
    ```
-   或在插件设置中配置 API Key / Auth Token。
+   或在插件设置中配置 API Key / Auth Token
 
-3. **DevEco Studio / IntelliJ IDEA** — 版本 2024.3 或更高
+3. **DevEco Studio / IntelliJ IDEA** — 版本 2024.3（build 243）或更高
 
 ## 构建
 
@@ -46,11 +54,13 @@
 
 构建产物位于 `build/distributions/` 目录。
 
+> **注意**：`build.gradle.kts` 中 `intellijPlatform.local()` 指向本地 DevEco Studio 路径，请根据你的环境修改。
+
 ## 安装
 
 1. 构建得到 `.zip` 文件
 2. 在 DevEco Studio 中打开 **Settings → Plugins → ⚙️ → Install Plugin from Disk...**
-3. 选择构建产物 zip 文件
+3. 选择 `build/distributions/` 下的 zip 文件
 4. 重启 IDE
 
 ## 配置
@@ -69,40 +79,41 @@
 ## 使用
 
 1. 在 IDE 右侧找到 **Cursor Agent** Tool Window
-2. 插件会自动连接到 Agent（或点击 **Reconnect**）
-3. 在输入框中输入需求，按 **Enter** 发送（**Shift+Enter** 换行）
-4. Agent 会流式输出响应，遇到文件修改或终端操作时会请求授权
-5. 点击底部模型名称可切换不同的 AI 模型
+2. 插件会自动连接到 Agent（或点击工具栏 **Reconnect**）
+3. 在底部输入框中输入需求，按 **Enter** 发送（**Shift+Enter** 换行）
+4. Agent 流式输出响应，遇到文件修改或终端操作时弹窗请求授权
+5. 点击底部模型名称切换 AI 模型
 6. 点击 **History** 浏览历史会话，双击打开
 7. 点击 **New Chat** 创建新的 Tab 会话
-8. 点击 Tab 上的 × 关闭会话并释放连接
+8. 双击 Tab 标题可重命名会话
+9. 点击 Tab 上的 × 关闭会话并释放连接
 
 ## 架构
 
 ```
 src/main/kotlin/com/cursor/agent/
-├── acp/
-│   ├── ACPClient.kt              # ACP JSON-RPC 客户端（stdio 通信）
-│   ├── ACPModels.kt              # ACP 协议数据模型
-│   └── JsonRpcMessage.kt         # JSON-RPC 消息定义
-├── services/
-│   ├── AgentConnection.kt        # 单个 Agent 连接（session/new + session/load）
-│   ├── AgentSessionManager.kt    # 项目级会话管理服务
-│   └── ChatHistoryService.kt     # Cursor 本地聊天历史读取（SQLite）
-├── settings/
-│   ├── AgentSettings.kt          # 持久化设置（含 Tab 恢复、模型记忆）
-│   └── AgentSettingsConfigurable.kt # 设置 UI
-└── ui/
-    ├── AgentChatPanel.kt         # 多 Tab 容器面板 + 历史切换
-    ├── AgentToolWindowFactory.kt # Tool Window 工厂
-    ├── ChatSessionTab.kt         # 单个聊天 Tab（输入、渲染、回调）
-    ├── ChatHtmlBuilder.kt        # HTML/CSS 生成 + highlight.js 集成
-    ├── ChatRenderer.kt           # JCEF 渲染器（支持文件路径跳转）
-    ├── SessionHistoryPanel.kt    # 会话历史列表面板
-    └── MessageRenderer.kt        # Markdown → HTML 转换
+├── acp/                              # ACP 协议层
+│   ├── ACPClient.kt                  # JSON-RPC 2.0 客户端，管理 agent CLI 子进程的 stdio 通信
+│   ├── ACPModels.kt                  # 协议数据模型（会话、提示、权限、FS/终端请求等）
+│   └── JsonRpcMessage.kt             # JSON-RPC 消息定义与分发
+├── services/                         # 服务层
+│   ├── AgentConnection.kt            # 单个 Agent 连接，封装完整会话生命周期与工具调用实现
+│   ├── AgentSessionManager.kt        # 项目级服务，提供 workspace 身份标识
+│   └── ChatHistoryService.kt         # Cursor 本地聊天历史读写（SQLite JDBC）
+├── settings/                         # 配置层
+│   ├── AgentSettings.kt              # 持久化设置（PersistentStateComponent）
+│   └── AgentSettingsConfigurable.kt  # Settings UI 面板
+└── ui/                               # UI 层
+    ├── AgentChatPanel.kt             # 多 Tab 容器 + 会话历史切换 + Tab 标题编辑
+    ├── AgentToolWindowFactory.kt     # Tool Window 注册工厂
+    ├── ChatSessionTab.kt             # 单个聊天 Tab（输入、渲染、模型选择、权限弹窗）
+    ├── ChatHtmlBuilder.kt            # HTML/CSS 生成 + highlight.js + 主题适配
+    ├── ChatRenderer.kt               # JCEF 渲染器（含文件路径跳转）/ JTextPane 降级
+    ├── SessionHistoryPanel.kt        # 会话历史列表面板
+    └── MessageRenderer.kt            # Markdown → HTML 转换（IntelliJ GFM Parser）
 ```
 
-### 核心流程
+### 数据流
 
 ```
 User Input → ChatSessionTab → AgentConnection → ACPClient → agent acp (stdio)
@@ -110,35 +121,25 @@ User Input → ChatSessionTab → AgentConnection → ACPClient → agent acp (s
              ChatRenderer      session/load      JSON-RPC 2.0
              (JCEF HTML)       session/new       (newline-delimited)
                                session/prompt
+                               set_config_option
 ```
 
 ### 多 Tab 架构
 
-每个 `ChatSessionTab` 持有独立的 `AgentConnection`，各自管理一个 `agent acp` 子进程。Tab 的打开状态通过 `AgentSettings.projectOpenTabs` 持久化，IDE 重启时自动恢复。
+每个 `ChatSessionTab` 持有独立的 `AgentConnection`，各自管理一个 `agent acp` 子进程。Tab 的打开状态通过 `AgentSettings.projectOpenTabs` 按项目持久化，IDE 重启时自动恢复。
 
-## 协议
+### 会话存储
 
-插件通过 ACP (Agent Client Protocol) 与 Cursor Agent CLI 通信：
-
-- **传输**: stdio (标准输入/输出)
-- **协议**: JSON-RPC 2.0
-- **帧格式**: 换行符分隔的 JSON
-- **会话流程**: `initialize` → `authenticate` → `session/load` (或 `session/new`) → `session/prompt`
-- **模型切换**: `session/set_config_option` (会话内无缝切换，无需重连)
-- **会话恢复**: `session/load` 恢复 Agent 上下文记忆，replay 历史消息由插件静默处理
-
-插件作为 ACP 客户端，实现了以下能力：
-- `fs.readTextFile` — 读取文件内容
-- `fs.writeTextFile` — 写入文件内容
-- `terminal` — 创建/管理终端进程
+插件读取 Cursor 本地数据（`~/.cursor/chats/<workspaceHash>/<chatId>/store.db`），通过 SQLite JDBC 解析 `meta` 表获取会话元信息，`blobs` 表获取消息内容。支持 Cursor 使用的 hex 编码和 plain JSON 两种存储格式。
 
 ## TODO
 
 - [ ] 图片上传 — 支持在对话中上传图片，实现多模态交互
-- [ ] 模型计费 / Tokens 查询 — 显示每次对话的 token 用量和费用估算
+- [ ] Token 用量 — 显示每次对话的 token 用量和费用估算
 - [ ] 会话导出 — 将对话内容导出为 Markdown 文件
 - [ ] Tab 拖拽排序
+- [ ] 发布到 JetBrains Marketplace / DevEco 插件市场
 
 ## License
 
-MIT
+[MIT](LICENSE)

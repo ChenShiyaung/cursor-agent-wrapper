@@ -2,19 +2,47 @@
     <id>com.cursor.agent.deveco</id>
     <name>Cursor Agent for DevEco</name>
     <version>1.0.0</version>
-    <vendor email="support@cursor.sh" url="https://cursor.com">Cursor Agent Plugin</vendor>
+    <vendor email="chenshiyaung@gmail.com" url="https://github.com/ChenShiyaung/cursor-agent-wrapper">ChenShiyaung</vendor>
 
     <description><![CDATA[
-    Integrates Cursor Agent capabilities into DevEco Studio / IntelliJ IDEA via the Agent Client Protocol (ACP).
-    <br/>
+    <p>Integrates <a href="https://cursor.com">Cursor Agent</a> AI coding capabilities into DevEco Studio and IntelliJ-based IDEs via the <a href="https://agentclientprotocol.com/">Agent Client Protocol (ACP)</a>.</p>
+
+    <h3>Features</h3>
     <ul>
-        <li>AI-powered code generation and editing</li>
-        <li>Agentic coding with tool calling (file read/write, terminal, search)</li>
-        <li>Streaming chat interface with markdown rendering</li>
-        <li>Permission-based tool execution</li>
-        <li>Session management and conversation history</li>
+        <li><b>Multi-tab chat</b> — manage multiple independent AI sessions side by side</li>
+        <li><b>Rich rendering</b> — Markdown with syntax-highlighted code blocks, copy button, and file path click-to-open</li>
+        <li><b>Model switching</b> — switch between 26+ AI models (Claude, GPT, Gemini, etc.) within a session</li>
+        <li><b>Agentic coding</b> — the Agent can read/write files and run terminal commands in your project</li>
+        <li><b>Permission control</b> — every tool call requires user approval before execution</li>
+        <li><b>Streaming output</b> — real-time display of thinking process and generated content</li>
+        <li><b>Session persistence</b> — open tabs auto-restore on IDE restart with full conversation history</li>
+        <li><b>History browser</b> — browse and reopen past sessions from local Cursor chat database</li>
+        <li><b>Theme adaptation</b> — follows IDE dark/light theme for all UI elements</li>
     </ul>
+
+    <h3>Requirements</h3>
+    <ul>
+        <li>Cursor CLI installed (<code>agent</code> command available in PATH)</li>
+        <li>Cursor account authenticated (<code>agent login</code>)</li>
+    </ul>
+
+    <h3>使用说明</h3>
+    <p>将 Cursor Agent 的 AI 编程能力集成到 DevEco Studio / IntelliJ IDEA 中。支持多 Tab 聊天、流式输出、代码高亮、模型切换、会话恢复等功能。需要先安装 Cursor CLI 并完成登录。</p>
     ]]></description>
+
+    <change-notes><![CDATA[
+    <h3>1.0.0</h3>
+    <ul>
+        <li>Initial release</li>
+        <li>Multi-tab chat with independent Agent connections</li>
+        <li>JCEF Markdown rendering with syntax highlighting</li>
+        <li>26+ model switching via ACP</li>
+        <li>Session persistence and context recovery</li>
+        <li>History browser with session deletion</li>
+        <li>ETS/ArkTS syntax highlighting support</li>
+        <li>Theme-adaptive UI (dark/light)</li>
+    </ul>
+    ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
 

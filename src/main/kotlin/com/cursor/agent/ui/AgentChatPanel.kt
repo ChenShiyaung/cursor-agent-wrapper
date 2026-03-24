@@ -81,10 +81,7 @@ class AgentChatPanel(
             return
         }
         ApplicationManager.getApplication().executeOnPooledThread {
-            val dbTitle = ChatHistoryService.readSessionTitle(chatId)
-            val displayTitle = if (!dbTitle.isNullOrBlank()) {
-                if (dbTitle.length > 20) dbTitle.take(18) + "\u2026" else dbTitle
-            } else "Chat"
+            val displayTitle = resolveDisplayTitle(chatId)
             SwingUtilities.invokeLater {
                 val alreadyOpened = tabs.find { it.effectiveSessionId == chatId || it.historyChatId == chatId }
                 if (alreadyOpened != null) {
@@ -98,6 +95,20 @@ class AgentChatPanel(
                 addTab(tab, displayTitle)
             }
         }
+    }
+
+    private fun resolveDisplayTitle(chatId: String): String {
+        val dbTitle = ChatHistoryService.readSessionTitle(chatId)
+        if (!dbTitle.isNullOrBlank()) {
+            return if (dbTitle.length > 20) dbTitle.take(18) + "\u2026" else dbTitle
+        }
+        val previews = ChatHistoryService.readSessionMessages(chatId)
+        val firstUser = previews.firstOrNull { it.role == "user" }?.content
+        if (!firstUser.isNullOrBlank()) {
+            val clean = firstUser.replace(Regex("\\s+"), " ").trim()
+            return if (clean.length > 20) clean.take(18) + "\u2026" else clean
+        }
+        return "Chat"
     }
 
     private fun addTab(tab: ChatSessionTab, title: String) {
@@ -192,17 +203,22 @@ class AgentChatPanel(
         private val titleLabel = JBLabel(titleText).apply {
             font = UIUtil.getLabelFont()
             foreground = UIUtil.getLabelForeground()
+            toolTipText = tab.tabTitle
         }
 
+        private var editing = false
+        private var activeEditor: JTextField? = null
+
+        private val closeBtnNormalColor = if (!com.intellij.ui.JBColor.isBright()) Color(0x88, 0x88, 0x88) else Color(0x99, 0x99, 0x99)
+        private val closeBtnHoverColor = if (!com.intellij.ui.JBColor.isBright()) Color(0xff, 0x66, 0x66) else Color(0xcc, 0x33, 0x33)
+        private val closeBtnHoverBg = if (!com.intellij.ui.JBColor.isBright()) Color(0x55, 0x55, 0x55) else Color(0xd8, 0xd8, 0xd8)
+
         private val closeBtn = object : JBLabel("\u00d7") {
-            private val normalColor = if (!com.intellij.ui.JBColor.isBright()) Color(0x88, 0x88, 0x88) else Color(0x99, 0x99, 0x99)
-            private val hoverColor = if (!com.intellij.ui.JBColor.isBright()) Color(0xff, 0x66, 0x66) else Color(0xcc, 0x33, 0x33)
-            private val hoverBg = if (!com.intellij.ui.JBColor.isBright()) Color(0x55, 0x55, 0x55) else Color(0xd8, 0xd8, 0xd8)
             private var isHover = false
 
             init {
                 font = UIUtil.getLabelFont().deriveFont(Font.BOLD, 16f)
-                foreground = normalColor
+                foreground = closeBtnNormalColor
                 cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 border = JBUI.Borders.empty(2, 6, 2, 6)
                 toolTipText = "Close"
@@ -210,17 +226,25 @@ class AgentChatPanel(
                 horizontalAlignment = SwingConstants.CENTER
                 verticalAlignment = SwingConstants.CENTER
                 addMouseListener(object : java.awt.event.MouseAdapter() {
-                    override fun mouseClicked(e: java.awt.event.MouseEvent) { closeTab(tab) }
-                    override fun mouseEntered(e: java.awt.event.MouseEvent) { isHover = true; foreground = hoverColor; repaint() }
-                    override fun mouseExited(e: java.awt.event.MouseEvent) { isHover = false; foreground = normalColor; repaint() }
+                    override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                        if (editing) { commitEditing(); return }
+                        closeTab(tab)
+                    }
+                    override fun mouseEntered(e: java.awt.event.MouseEvent) {
+                        if (editing) return
+                        isHover = true; foreground = closeBtnHoverColor; repaint()
+                    }
+                    override fun mouseExited(e: java.awt.event.MouseEvent) {
+                        isHover = false; foreground = closeBtnNormalColor; repaint()
+                    }
                 })
             }
 
             override fun paintComponent(g: Graphics) {
-                if (isHover) {
+                if (isHover && !editing) {
                     val g2 = g.create() as Graphics2D
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                    g2.color = hoverBg
+                    g2.color = closeBtnHoverBg
                     g2.fillRoundRect(0, 0, width, height, 6, 6)
                     g2.dispose()
                 }
@@ -233,11 +257,173 @@ class AgentChatPanel(
             border = JBUI.Borders.empty(2, 0)
             add(titleLabel, BorderLayout.CENTER)
             add(closeBtn, BorderLayout.EAST)
+
+            val headerMouseHandler = object : java.awt.event.MouseAdapter() {
+                private fun dispatch(e: java.awt.event.MouseEvent) {
+                    if (editing) return
+                    val pt = SwingUtilities.convertPoint(e.component, e.point, tabbedPane)
+                    tabbedPane.dispatchEvent(java.awt.event.MouseEvent(
+                        tabbedPane, e.id, e.`when`, e.modifiersEx,
+                        pt.x, pt.y, e.clickCount, e.isPopupTrigger, e.button
+                    ))
+                }
+                override fun mousePressed(e: java.awt.event.MouseEvent) {
+                    if (editing) { commitEditing(); e.consume(); return }
+                    val idx = tabbedPane.indexOfTabComponent(this@CloseableTabHeader)
+                    if (idx >= 0) tabbedPane.selectedIndex = idx
+                    dispatch(e)
+                }
+                override fun mouseEntered(e: java.awt.event.MouseEvent) { dispatch(e) }
+                override fun mouseExited(e: java.awt.event.MouseEvent) { dispatch(e) }
+                override fun mouseMoved(e: java.awt.event.MouseEvent) { dispatch(e) }
+                override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                    if (editing) return
+                    if (e.clickCount == 2) startEditing()
+                }
+            }
+            titleLabel.addMouseListener(headerMouseHandler)
+            titleLabel.addMouseMotionListener(headerMouseHandler)
+            addMouseListener(headerMouseHandler)
+            addMouseMotionListener(headerMouseHandler)
+        }
+
+        private var globalClickListener: java.awt.event.AWTEventListener? = null
+
+        private fun clearTabbedPaneHover() {
+            tabbedPane.dispatchEvent(java.awt.event.MouseEvent(
+                tabbedPane, java.awt.event.MouseEvent.MOUSE_EXITED,
+                System.currentTimeMillis(), 0, -1, -1, 0, false
+            ))
+        }
+
+        private fun isInsideTabbedPaneHeader(src: Component, pt: Point): Boolean {
+            val ptInPane = SwingUtilities.convertPoint(src, pt, tabbedPane)
+            val tabRunHeight = tabbedPane.getBoundsAt(0)?.let { it.y + it.height } ?: 30
+            return ptInPane.y < tabRunHeight && tabbedPane.contains(ptInPane)
+        }
+
+        private fun installGlobalClickInterceptor() {
+            val listener = java.awt.event.AWTEventListener { event ->
+                if (!editing) return@AWTEventListener
+                val me = event as? java.awt.event.MouseEvent ?: return@AWTEventListener
+                val src = me.component ?: return@AWTEventListener
+
+                when (me.id) {
+                    java.awt.event.MouseEvent.MOUSE_PRESSED -> {
+                        val editor = activeEditor ?: return@AWTEventListener
+                        val clickPt = SwingUtilities.convertPoint(src, me.point, editor)
+                        if (!editor.contains(clickPt)) {
+                            SwingUtilities.invokeLater { commitEditing() }
+                            me.consume()
+                        }
+                    }
+                    java.awt.event.MouseEvent.MOUSE_MOVED,
+                    java.awt.event.MouseEvent.MOUSE_ENTERED,
+                    java.awt.event.MouseEvent.MOUSE_EXITED -> {
+                        try {
+                            if (src === tabbedPane || SwingUtilities.isDescendingFrom(src, tabbedPane)) {
+                                if (tabbedPane.tabCount > 0 && isInsideTabbedPaneHeader(src, me.point)) {
+                                    me.consume()
+                                    clearTabbedPaneHover()
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            globalClickListener = listener
+            Toolkit.getDefaultToolkit().addAWTEventListener(
+                listener,
+                java.awt.AWTEvent.MOUSE_EVENT_MASK or java.awt.AWTEvent.MOUSE_MOTION_EVENT_MASK
+            )
+        }
+
+        private fun removeGlobalClickInterceptor() {
+            globalClickListener?.let { Toolkit.getDefaultToolkit().removeAWTEventListener(it) }
+            globalClickListener = null
+        }
+
+        private fun startEditing() {
+            if (editing) return
+            editing = true
+            clearTabbedPaneHover()
+            tabbedPane.putClientProperty("JTabbedPane.tabHoverEnabled", false)
+
+            val editor = JTextField(tab.tabTitle).apply {
+                font = UIUtil.getLabelFont()
+                selectAll()
+                border = JBUI.Borders.empty(0, 2)
+            }
+            activeEditor = editor
+
+            editor.addActionListener { commitEditing() }
+            editor.addKeyListener(object : java.awt.event.KeyAdapter() {
+                override fun keyPressed(e: java.awt.event.KeyEvent) {
+                    if (e.keyCode == java.awt.event.KeyEvent.VK_ESCAPE) cancelEditing()
+                }
+            })
+
+            remove(titleLabel)
+            add(editor, BorderLayout.CENTER)
+            revalidate()
+            repaint()
+            editor.requestFocusInWindow()
+
+            installGlobalClickInterceptor()
+        }
+
+        private fun commitEditing() {
+            val editor = activeEditor ?: return
+            if (!editing) return
+            val newTitle = editor.text.trim()
+            if (newTitle.isNotBlank() && newTitle != tab.tabTitle) {
+                applyRename(newTitle)
+            }
+            finishEditing(editor)
+        }
+
+        private fun cancelEditing() {
+            val editor = activeEditor ?: return
+            finishEditing(editor)
+        }
+
+        private fun finishEditing(editor: JTextField) {
+            if (!editing) return
+            editing = false
+            activeEditor = null
+            removeGlobalClickInterceptor()
+            tabbedPane.putClientProperty("JTabbedPane.tabHoverEnabled", true)
+            remove(editor)
+            add(titleLabel, BorderLayout.CENTER)
+            revalidate()
+            repaint()
+            tabbedPane.requestFocusInWindow()
+        }
+
+        private fun applyRename(newTitle: String) {
+            val short = if (newTitle.length > 20) newTitle.take(18) + "\u2026" else newTitle
+            titleText = short
+            titleLabel.text = short
+            titleLabel.toolTipText = newTitle
+            titleLabel.foreground = UIUtil.getLabelForeground()
+            tab.setTitleManually(newTitle)
+
+            val idx = tabbedPane.indexOfComponent(tab)
+            if (idx >= 0) tabbedPane.setTitleAt(idx, short)
+
+            val sid = tab.persistentSessionId
+            if (sid != null) {
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    ChatHistoryService.updateSessionTitle(sid, newTitle)
+                    log.info("Tab renamed to '$newTitle' (sid=$sid)")
+                }
+            }
         }
 
         fun setTitle(title: String) {
             titleText = title
             titleLabel.text = title
+            titleLabel.toolTipText = tab.tabTitle
             titleLabel.foreground = UIUtil.getLabelForeground()
         }
     }

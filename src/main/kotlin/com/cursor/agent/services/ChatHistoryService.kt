@@ -23,7 +23,12 @@ data class ChatSession(
         }
 
     val displayName: String
-        get() = if (name.isNotBlank()) name else "Chat ${chatId.take(8)}"
+        get() = if (name.isNotBlank() && name != "New Agent") name else {
+            if (userMessagePreviews.isNotEmpty()) {
+                val preview = userMessagePreviews.first().take(30)
+                if (userMessagePreviews.first().length > 30) "$preview\u2026" else preview
+            } else "Chat ${chatId.take(8)}"
+        }
 }
 
 object ChatHistoryService {
@@ -93,6 +98,34 @@ object ChatHistoryService {
         } catch (e: Exception) {
             log.warn("Failed to read session title for $chatId: ${e.message}")
             null
+        }
+    }
+
+    fun updateSessionTitle(chatId: String, title: String): Boolean {
+        val dbFile = findDbFile(chatId) ?: return false
+        return try {
+            val url = "jdbc:sqlite:${dbFile.absolutePath}"
+            DriverManager.getConnection(url).use { conn ->
+                val rs = conn.prepareStatement("SELECT value FROM meta WHERE key = '0'").executeQuery()
+                if (!rs.next()) return false
+                val rawValue = rs.getString("value")
+                val jsonStr = if (rawValue.matches(Regex("^[0-9a-fA-F]+$"))) {
+                    String(hexToBytes(rawValue), Charsets.UTF_8)
+                } else rawValue
+                val meta = gson.fromJson(jsonStr, JsonObject::class.java)
+                meta.addProperty("name", title)
+                val updatedJson = gson.toJson(meta)
+                val isHex = rawValue.matches(Regex("^[0-9a-fA-F]+$"))
+                val newValue = if (isHex) bytesToHex(updatedJson.toByteArray(Charsets.UTF_8)) else updatedJson
+                val updateStmt = conn.prepareStatement("UPDATE meta SET value = ? WHERE key = '0'")
+                updateStmt.setString(1, newValue)
+                val rows = updateStmt.executeUpdate()
+                log.info("Updated session title for $chatId to '$title' (rows=$rows)")
+                rows > 0
+            }
+        } catch (e: Exception) {
+            log.warn("Failed to update session title for $chatId: ${e.message}")
+            false
         }
     }
 
@@ -261,6 +294,9 @@ object ChatHistoryService {
             else -> null
         }
     }
+
+    private fun bytesToHex(bytes: ByteArray): String =
+        bytes.joinToString("") { "%02x".format(it) }
 
     private fun hexToBytes(hex: String): ByteArray {
         val len = hex.length

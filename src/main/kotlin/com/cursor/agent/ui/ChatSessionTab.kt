@@ -40,6 +40,7 @@ class ChatSessionTab(
     private val currentThought = StringBuilder()
     private var isThinking = false
     private var hasWelcome = false
+    private var titleGenerated = false
 
     private val toolCallElements = ConcurrentHashMap<String, ToolCallInfo>()
     private val toolCallOrder = mutableListOf<String>()
@@ -52,7 +53,11 @@ class ChatSessionTab(
     private var cachedModelValue: String? = null
 
     var tabTitle: String = "New Chat"
-        private set
+
+    fun setTitleManually(title: String) {
+        tabTitle = title
+        titleGenerated = true
+    }
 
     val effectiveSessionId: String?
         get() = connection.sessionId ?: historyChatId
@@ -141,11 +146,21 @@ class ChatSessionTab(
             val title = ChatHistoryService.readSessionTitle(chatId)
             SwingUtilities.invokeLater {
                 chatHistory.clear()
-                for (msg in messages) chatHistory.add(ChatEntry(msg.role, msg.content))
-                if (title != null) {
-                    tabTitle = title
-                    onTitleChanged(this, title)
+                for (msg in messages) {
+                    if (msg.role == "thought") continue
+                    chatHistory.add(ChatEntry(msg.role, msg.content))
                 }
+
+                val resolvedTitle = title
+                    ?: messages.firstOrNull { it.role == "user" }?.content
+                        ?.replace(Regex("\\s+"), " ")?.trim()
+                        ?.let { if (it.length > 30) it.take(30) + "\u2026" else it }
+                if (!resolvedTitle.isNullOrBlank()) {
+                    tabTitle = resolvedTitle
+                    titleGenerated = true
+                    onTitleChanged(this, resolvedTitle)
+                }
+
                 if (chatHistory.isEmpty()) hasWelcome = true
                 renderFullPage()
             }
@@ -200,7 +215,6 @@ class ChatSessionTab(
                         log.info("session/load failed or unsupported for $historyChatId — agent has NO context memory (new session)")
                     }
                 }
-                refreshSessionTitle()
                 SwingUtilities.invokeLater { onSessionReady?.invoke() }
             }
         }
@@ -240,7 +254,9 @@ class ChatSessionTab(
                 _resolvedPersistentId = sid
                 onSessionReady?.invoke()
             }
-            refreshSessionTitle()
+            if (!titleGenerated) {
+                generateAndSaveTitle()
+            }
         }
         connection.onPermissionNeeded = { _, title, detail, callback ->
             SwingUtilities.invokeLater { showPermissionDialog(title, detail, callback) }
@@ -333,27 +349,25 @@ class ChatSessionTab(
         popup.show(modelLabel, 0, -popup.preferredSize.height)
     }
 
-    private fun refreshSessionTitle() {
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val sid = connection.sessionId ?: run {
-                log.info("refreshSessionTitle: no sessionId yet")
-                return@executeOnPooledThread
+    private fun generateAndSaveTitle() {
+        val firstUserMsg = chatHistory.firstOrNull { it.role == "user" }?.text ?: return
+        val cleaned = firstUserMsg.replace(Regex("\\s+"), " ").trim()
+        val title = if (cleaned.length > 30) cleaned.take(30) + "\u2026" else cleaned
+        if (title.isBlank()) return
+
+        titleGenerated = true
+        val sid = connection.sessionId
+
+        SwingUtilities.invokeLater {
+            tabTitle = title
+            onTitleChanged(this, title)
+        }
+
+        if (sid != null) {
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val updated = ChatHistoryService.updateSessionTitle(sid, title)
+                log.info("generateAndSaveTitle: sid=$sid title='$title' dbUpdated=$updated")
             }
-            log.info("refreshSessionTitle: polling for sid=$sid, current tabTitle='$tabTitle'")
-            for (attempt in 1..8) {
-                if (attempt > 1) Thread.sleep(2000L * attempt)
-                val title = ChatHistoryService.readSessionTitle(sid)
-                log.info("refreshSessionTitle: attempt=$attempt sid=$sid title='$title'")
-                if (!title.isNullOrBlank() && title != "New Agent" && title != tabTitle) {
-                    SwingUtilities.invokeLater {
-                        tabTitle = title
-                        onTitleChanged(this, title)
-                    }
-                    log.info("refreshSessionTitle: updated to '$title'")
-                    return@executeOnPooledThread
-                }
-            }
-            log.info("refreshSessionTitle: gave up polling for sid=$sid")
         }
     }
 
