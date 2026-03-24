@@ -100,13 +100,13 @@ class AgentChatPanel(
     private fun resolveDisplayTitle(chatId: String): String {
         val dbTitle = ChatHistoryService.readSessionTitle(chatId)
         if (!dbTitle.isNullOrBlank()) {
-            return if (dbTitle.length > 20) dbTitle.take(18) + "\u2026" else dbTitle
+            return if (dbTitle.length > 12) dbTitle.take(10) + "\u2026" else dbTitle
         }
         val previews = ChatHistoryService.readSessionMessages(chatId)
         val firstUser = previews.firstOrNull { it.role == "user" }?.content
         if (!firstUser.isNullOrBlank()) {
             val clean = firstUser.replace(Regex("\\s+"), " ").trim()
-            return if (clean.length > 20) clean.take(18) + "\u2026" else clean
+            return if (clean.length > 12) clean.take(10) + "\u2026" else clean
         }
         return "Chat"
     }
@@ -158,16 +158,16 @@ class AgentChatPanel(
     private fun updateTabTitle(tab: ChatSessionTab, title: String) {
         val idx = tabbedPane.indexOfComponent(tab)
         if (idx < 0) return
-        val shortTitle = if (title.length > 20) title.take(18) + "\u2026" else title
+        val shortTitle = if (title.length > 12) title.take(10) + "\u2026" else title
         tabbedPane.setTitleAt(idx, shortTitle)
         val header = tabbedPane.getTabComponentAt(idx)
         if (header is CloseableTabHeader) header.setTitle(shortTitle)
     }
 
     private fun showHistory() {
-        val openIds = tabs.mapNotNull { it.effectiveSessionId }.toSet()
+        val openIds = tabs.mapNotNull { it.effectiveSessionId ?: it.historyChatId }.toSet()
         val selectedTab = tabbedPane.selectedComponent as? ChatSessionTab
-        val activeId = selectedTab?.effectiveSessionId
+        val activeId = selectedTab?.effectiveSessionId ?: selectedTab?.historyChatId
         historyPanel.refreshSessions(
             ChatHtmlBuilder().isDark(),
             ChatHtmlBuilder().fontSize(),
@@ -401,7 +401,7 @@ class AgentChatPanel(
         }
 
         private fun applyRename(newTitle: String) {
-            val short = if (newTitle.length > 20) newTitle.take(18) + "\u2026" else newTitle
+            val short = if (newTitle.length > 12) newTitle.take(10) + "\u2026" else newTitle
             titleText = short
             titleLabel.text = short
             titleLabel.toolTipText = newTitle

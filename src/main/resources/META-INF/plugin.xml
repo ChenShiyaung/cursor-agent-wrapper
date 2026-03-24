@@ -1,6 +1,6 @@
 <idea-plugin>
-    <id>com.cursor.agent.deveco</id>
-    <name>Cursor Agent for DevEco</name>
+    <id>com.chenshiyaung.cursor-agent-wrapper</id>
+    <name>Cursor Agent Wrapper</name>
     <version>1.0.0</version>
     <vendor email="chenshiyaung@gmail.com" url="https://github.com/ChenShiyaung/cursor-agent-wrapper">ChenShiyaung</vendor>
 
