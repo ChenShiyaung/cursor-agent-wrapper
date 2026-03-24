@@ -6,12 +6,13 @@
 
 - **AI 对话聊天面板** — 在 IDE 右侧 Tool Window 中与 Cursor Agent 进行对话
 - **JCEF 渲染** — 使用内嵌 Chromium 浏览器渲染 Markdown，支持代码块、表格、列表等完整格式
+- **模型切换** — 支持在会话内无缝切换 AI 模型（Opus 4.6、Sonnet 4.6、GPT-5.4 等 26 个模型）
 - **文件读写** — Agent 可以直接读取和修改项目中的文件
 - **终端执行** — Agent 可以在项目目录中执行 shell 命令
 - **权限控制** — 每次工具调用前请求用户授权，确保安全
 - **流式输出** — 实时显示 Agent 的思考过程（折叠显示）和生成内容
 - **会话管理** — 自动连接/断开、会话持久化、历史会话浏览（读取 `.cursor/chats` 数据库）
-- **主题适配** — 自动跟随 IDE 深色/浅色主题
+- **主题适配** — 自动跟随 IDE 深色/浅色主题（含滚动条样式）
 
 ## 前置条件
 
@@ -27,7 +28,7 @@
    ```
    或在插件设置中配置 API Key / Auth Token。
 
-3. **DevEco Studio / IntelliJ IDEA** — 版本 2024.1 或更高
+3. **DevEco Studio / IntelliJ IDEA** — 版本 2024.3 或更高
 
 ## 构建
 
@@ -58,15 +59,17 @@
 | API Key | Cursor API Key（可选，也可用环境变量 `CURSOR_API_KEY`） | — |
 | Auth Token | Cursor Auth Token（可选） | — |
 | API Endpoint | 自定义 API 端点（可选） | — |
+| Auto-connect | 打开项目时自动连接 Agent | true |
 | Auto-approve permissions | 自动批准所有工具调用（不推荐） | false |
 
 ## 使用
 
 1. 在 IDE 右侧找到 **Cursor Agent** Tool Window
-2. 点击 **Connect** 连接到 Agent
-3. 在输入框中输入需求，按 **Enter** 发送
+2. 插件会自动连接到 Agent（或点击 **Reconnect**）
+3. 在输入框中输入需求，按 **Enter** 发送（**Shift+Enter** 换行）
 4. Agent 会流式输出响应，遇到文件修改或终端操作时会请求授权
-5. 点击 **Cancel** 可中断当前请求
+5. 点击底部模型名称可切换不同的 AI 模型
+6. 点击 **Cancel** 可中断当前请求
 
 ## 架构
 
@@ -105,6 +108,7 @@ User Input → AgentChatPanel → AgentSessionManager → ACPClient → agent ac
 - **协议**: JSON-RPC 2.0
 - **帧格式**: 换行符分隔的 JSON
 - **会话流程**: `initialize` → `authenticate` → `session/new` → `session/prompt`
+- **模型切换**: `session/set_config_option` (会话内无缝切换，无需重连)
 
 插件作为 ACP 客户端，实现了以下能力：
 - `fs.readTextFile` — 读取文件内容
@@ -113,10 +117,8 @@ User Input → AgentChatPanel → AgentSessionManager → ACPClient → agent ac
 
 ## TODO
 
-- [ ] **模型能力切换** — 支持在对话中切换不同的 AI 模型（如 GPT-4o、Claude 等）
 - [ ] **图片上传** — 支持在对话中上传图片，实现多模态交互
 - [ ] **模型计费 / Tokens 查询** — 显示每次对话的 token 用量和费用估算
-- [ ] **滚动条样式优化** — JCEF 渲染区域自定义滚动条样式，适配 IDE 主题
 - [ ] **代码块语法高亮** — 引入 highlight.js 或 Prism.js 实现代码块语法着色
 - [ ] **消息复制** — 支持一键复制 Agent 回复内容
 - [ ] **会话导出** — 将对话内容导出为 Markdown 文件

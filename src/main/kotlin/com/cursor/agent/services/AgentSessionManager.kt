@@ -27,12 +27,19 @@ class AgentSessionManager(private val project: Project) : Disposable {
     private val toolCallCache = ConcurrentHashMap<String, ToolCallInfo>()
     private var terminalIdCounter = 0
 
+    var currentModelId: String = ""
+        private set
+    var configOptions: List<ConfigOption> = emptyList()
+        private set
+
     var onMessageChunk: ((String) -> Unit)? = null
     var onThoughtChunk: ((String) -> Unit)? = null
     var onToolCallUpdate: ((ToolCallInfo) -> Unit)? = null
     var onStatusChanged: ((AgentStatus) -> Unit)? = null
     var onPermissionNeeded: ((Int, String, String, (Boolean) -> Unit) -> Unit)? = null
     var onPromptFinished: ((String) -> Unit)? = null
+    var onModelChanged: ((String) -> Unit)? = null
+    var onConfigOptionsUpdated: ((List<ConfigOption>) -> Unit)? = null
 
     fun saveChatHistory(html: String) {
         AgentSettings.getInstance().state.chatHistory = html
@@ -56,6 +63,8 @@ class AgentSessionManager(private val project: Project) : Disposable {
 
                 val settings = AgentSettings.getInstance().state
                 val lastId = settings.lastSessionId.ifEmpty { null }
+
+                currentModelId = settings.selectedModel
 
                 val client = ACPClient(
                     agentPath = settings.agentPath,
@@ -92,6 +101,35 @@ class AgentSessionManager(private val project: Project) : Disposable {
                     settings.lastSessionId = result.sessionId
                     settings.lastSessionCwd = cwd
                     log.info("Session created: ${result.sessionId}")
+
+                    result.configOptions?.let { opts ->
+                        configOptions = opts
+                        val modelOpt = opts.find { it.id == "model" }
+                        if (modelOpt != null) {
+                            currentModelId = modelOpt.currentValue ?: ""
+                            settings.selectedModel = currentModelId
+                            onModelChanged?.invoke(currentModelId)
+                        }
+                        onConfigOptionsUpdated?.invoke(opts)
+                    }
+
+                    if (configOptions.isEmpty() && result.models != null) {
+                        val m = result.models
+                        currentModelId = m.currentModelId ?: ""
+                        settings.selectedModel = currentModelId
+                        val modelConfigOpt = ConfigOption(
+                            id = "model",
+                            name = "Model",
+                            category = "model",
+                            type = "select",
+                            currentValue = m.currentModelId,
+                            options = m.availableModels?.map { ConfigOptionValue(value = it.modelId, name = it.name) }
+                        )
+                        configOptions = listOf(modelConfigOpt)
+                        onModelChanged?.invoke(currentModelId)
+                        onConfigOptionsUpdated?.invoke(configOptions)
+                    }
+
                     onStatusChanged?.invoke(AgentStatus.READY)
                 } else {
                     notifyError("Failed to create agent session")
@@ -134,12 +172,10 @@ class AgentSessionManager(private val project: Project) : Disposable {
             return
         }
 
-        log.info("sendPrompt: sending to session $sid, text length=${text.length}")
         scope.launch {
             try {
                 onStatusChanged?.invoke(AgentStatus.THINKING)
                 val result = client.prompt(sid, text)
-                log.info("sendPrompt: completed, stopReason=${result?.stopReason}")
                 onPromptFinished?.invoke(result?.stopReason ?: "unknown")
                 onStatusChanged?.invoke(AgentStatus.READY)
             } catch (e: ACPException) {
@@ -165,14 +201,10 @@ class AgentSessionManager(private val project: Project) : Disposable {
         client.onSessionUpdate = { update ->
             when (update.sessionUpdate) {
                 "agent_message_chunk" -> {
-                    val text = update.content?.text
-                    log.info("agent_message_chunk: text=${text?.take(50)}, callback=${onMessageChunk != null}")
-                    text?.let { onMessageChunk?.invoke(it) }
+                    update.content?.text?.let { onMessageChunk?.invoke(it) }
                 }
                 "agent_thought_chunk" -> {
-                    val text = update.content?.text
-                    log.info("agent_thought_chunk: text=${text?.take(50)}, callback=${onThoughtChunk != null}")
-                    text?.let { onThoughtChunk?.invoke(it) }
+                    update.content?.text?.let { onThoughtChunk?.invoke(it) }
                 }
                 "tool_call", "tool_call_update" -> {
                     val tcId = update.toolCallId
@@ -189,9 +221,19 @@ class AgentSessionManager(private val project: Project) : Disposable {
                         onToolCallUpdate?.invoke(info)
                     }
                 }
-                else -> {
-                    log.info("Session update: ${update.sessionUpdate}")
+                "config_option_update" -> {
+                    update.configOptions?.let { opts ->
+                        configOptions = opts
+                        val modelOpt = opts.find { it.id == "model" }
+                        if (modelOpt != null) {
+                            currentModelId = modelOpt.currentValue ?: ""
+                            AgentSettings.getInstance().state.selectedModel = currentModelId
+                            onModelChanged?.invoke(currentModelId)
+                        }
+                        onConfigOptionsUpdated?.invoke(opts)
+                    }
                 }
+                else -> {}
             }
         }
 
@@ -382,6 +424,31 @@ class AgentSessionManager(private val project: Project) : Disposable {
             }
         }
         return parts.joinToString("\n")
+    }
+
+    fun getModelConfigOption(): ConfigOption? {
+        return configOptions.find { it.id == "model" }
+    }
+
+    fun switchModel(acpValue: String) {
+        val sid = sessionId ?: return
+        val client = acpClient ?: return
+        val modelOpt = getModelConfigOption() ?: return
+
+        scope.launch {
+            try {
+                val result = client.setConfigOption(sid, modelOpt.id, acpValue)
+                if (result?.configOptions != null) {
+                    configOptions = result.configOptions
+                }
+                currentModelId = acpValue
+                AgentSettings.getInstance().state.selectedModel = acpValue
+                onModelChanged?.invoke(acpValue)
+            } catch (e: Exception) {
+                log.error("Failed to switch model to $acpValue", e)
+                notifyError("Failed to switch model: ${e.message}")
+            }
+        }
     }
 
     private fun notifyError(message: String) {

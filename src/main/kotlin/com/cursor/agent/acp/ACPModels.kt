@@ -34,10 +34,58 @@ data class NewSessionParams(
 
 data class NewSessionResult(
     val sessionId: String,
-    val sessionConfigOptions: List<JsonElement>? = null,
-    val modeState: JsonElement? = null
+    val configOptions: List<ConfigOption>? = null,
+    val models: ModelsInfo? = null,
+    val modes: ModesInfo? = null
 )
 
+data class ModelsInfo(
+    val currentModelId: String? = null,
+    val availableModels: List<AvailableModel>? = null
+)
+
+data class AvailableModel(
+    val modelId: String,
+    val name: String? = null
+)
+
+data class ModesInfo(
+    val currentModeId: String? = null,
+    val availableModes: List<AvailableMode>? = null
+)
+
+data class AvailableMode(
+    val id: String,
+    val name: String? = null,
+    val description: String? = null
+)
+
+data class ConfigOption(
+    val id: String,
+    val name: String? = null,
+    val description: String? = null,
+    val category: String? = null,
+    val type: String? = null,
+    val currentValue: String? = null,
+    val options: List<ConfigOptionValue>? = null
+)
+
+data class ConfigOptionValue(
+    val value: String,
+    val name: String? = null,
+    val description: String? = null,
+    val group: String? = null
+)
+
+data class SetConfigOptionParams(
+    val sessionId: String,
+    val configId: String,
+    val value: String
+)
+
+data class SetConfigOptionResult(
+    val configOptions: List<ConfigOption>? = null
+)
 
 data class PromptParams(
     val sessionId: String,
@@ -69,7 +117,9 @@ data class SessionUpdateContent(
     val input: JsonElement? = null,
     val output: JsonElement? = null,
     val todos: JsonElement? = null,
-    val plan: JsonElement? = null
+    val plan: JsonElement? = null,
+    // config_option_update
+    val configOptions: List<ConfigOption>? = null
 )
 
 data class UpdateContent(

@@ -28,6 +28,7 @@ class AgentChatPanel(private val project: Project, private val parentDisposable:
     private val sendButton: JButton
     private val cancelButton: JButton
     private val statusLabel: JBLabel
+    private val modelLabel: JBLabel
     private val currentAgentMessage = StringBuilder()
     private val currentThought = StringBuilder()
     private var isThinking = false
@@ -57,14 +58,9 @@ class AgentChatPanel(private val project: Project, private val parentDisposable:
     init {
         border = JBUI.Borders.empty(4)
 
+        // ── Top toolbar ──
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-        cancelButton = JButton("Cancel").apply {
-            isEnabled = false
-            addActionListener { sessionManager.cancelCurrentPrompt() }
-        }
-        val historyButton = JButton("History").apply {
-            addActionListener { showSessionHistory() }
-        }
+        val historyButton = JButton("History").apply { addActionListener { showSessionHistory() } }
         val newChatButton = JButton("New Chat").apply {
             addActionListener {
                 clearChat()
@@ -73,20 +69,22 @@ class AgentChatPanel(private val project: Project, private val parentDisposable:
                 sessionManager.connect()
             }
         }
+        cancelButton = JButton("Cancel").apply {
+            isEnabled = false
+            addActionListener { sessionManager.cancelCurrentPrompt() }
+        }
         val reconnectButton = JButton("Reconnect").apply {
-            addActionListener {
-                sessionManager.disconnect()
-                sessionManager.connect()
-            }
+            addActionListener { sessionManager.disconnect(); sessionManager.connect() }
         }
         statusLabel = JBLabel("Disconnected").apply { foreground = JBColor.GRAY }
         toolbar.add(historyButton)
         toolbar.add(newChatButton)
         toolbar.add(cancelButton)
         toolbar.add(reconnectButton)
-        toolbar.add(Box.createHorizontalStrut(8))
+        toolbar.add(Box.createHorizontalStrut(4))
         toolbar.add(statusLabel)
 
+        // ── Chat renderer ──
         chatRenderer = try {
             JcefChatRenderer(parentDisposable)
         } catch (e: Throwable) {
@@ -94,38 +92,86 @@ class AgentChatPanel(private val project: Project, private val parentDisposable:
             TextPaneChatRenderer()
         }
 
+        // ── Model label ──
+        val savedModel = com.cursor.agent.settings.AgentSettings.getInstance().state.selectedModel
+        modelLabel = JBLabel(truncateModelName(formatModelDisplay(savedModel)) + " \u25BE").apply {
+            foreground = if (isDark()) Color(0x6c, 0xb6, 0xff) else Color(0x15, 0x65, 0xc0)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            toolTipText = savedModel.ifEmpty { "Auto" }
+            addMouseListener(object : java.awt.event.MouseAdapter() {
+                override fun mouseClicked(e: java.awt.event.MouseEvent) { showModelSelector() }
+            })
+        }
+
+        // ── Input area ──
         inputArea = JBTextArea(3, 0).apply {
             lineWrap = true
             wrapStyleWord = true
             font = UIUtil.getLabelFont().deriveFont(fontSize().toFloat())
-            border = JBUI.Borders.compound(
-                JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0),
-                JBUI.Borders.empty(6)
-            )
+            border = JBUI.Borders.empty(6)
             emptyText.text = "Ask Cursor Agent... (Enter to send, Shift+Enter for newline)"
         }
         inputArea.addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
-                if (e.keyCode == KeyEvent.VK_ENTER && !e.isShiftDown) {
-                    e.consume()
-                    onSend()
+                if (e.keyCode == KeyEvent.VK_ENTER) {
+                    if (e.isShiftDown) {
+                        e.consume()
+                        inputArea.insert("\n", inputArea.caretPosition)
+                    } else {
+                        e.consume()
+                        onSend()
+                    }
                 }
             }
         })
 
         sendButton = JButton("Send").apply { addActionListener { onSend() } }
 
-        val inputPanel = JPanel(BorderLayout(4, 0)).apply {
-            add(JBScrollPane(inputArea).apply {
-                preferredSize = Dimension(0, 70)
-                verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
-            }, BorderLayout.CENTER)
-            add(sendButton, BorderLayout.EAST)
+        // ── Bottom bar: model left, send right ──
+        val bottomBar = JPanel(BorderLayout(4, 0)).apply {
+            border = JBUI.Borders.empty(4, 6, 4, 6)
+            add(modelLabel, BorderLayout.WEST)
+            val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+            rightPanel.add(cancelButton)
+            rightPanel.add(sendButton)
+            add(rightPanel, BorderLayout.EAST)
         }
+
+        // ── Compose input + bottom bar with shared rounded border ──
+        val inputScrollPane = JBScrollPane(inputArea).apply {
+            verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+            horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+            preferredSize = Dimension(0, 72)
+            border = JBUI.Borders.empty()
+        }
+
+        val composerPanel = object : JPanel(BorderLayout()) {
+            init { isOpaque = false }
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                val bgColor = if (isDark()) Color(0x2b, 0x2b, 0x2b) else Color(0xf7, 0xf7, 0xf8)
+                g2.color = bgColor
+                g2.fillRoundRect(0, 0, width, height, 12, 12)
+                val borderC = if (isDark()) Color(0x44, 0x44, 0x44) else Color(0xd0, 0xd0, 0xd0)
+                g2.color = borderC
+                g2.drawRoundRect(0, 0, width - 1, height - 1, 12, 12)
+                g2.dispose()
+            }
+        }.apply {
+            border = JBUI.Borders.empty(2)
+            add(inputScrollPane, BorderLayout.CENTER)
+            add(bottomBar, BorderLayout.SOUTH)
+        }
+
+        inputArea.isOpaque = false
+        inputScrollPane.isOpaque = false
+        inputScrollPane.viewport.isOpaque = false
+        bottomBar.isOpaque = false
 
         add(toolbar, BorderLayout.NORTH)
         add(chatRenderer.component, BorderLayout.CENTER)
-        add(inputPanel, BorderLayout.SOUTH)
+        add(composerPanel, BorderLayout.SOUTH)
 
         setupSessionCallbacks()
         updateStatus(AgentStatus.DISCONNECTED)
@@ -146,6 +192,13 @@ class AgentChatPanel(private val project: Project, private val parentDisposable:
         val manager = sessionManager
 
         manager.onStatusChanged = { status -> SwingUtilities.invokeLater { updateStatus(status) } }
+
+        manager.onModelChanged = { modelId ->
+            SwingUtilities.invokeLater {
+                modelLabel.text = truncateModelName(formatModelDisplay(modelId)) + " \u25BE"
+                modelLabel.toolTipText = modelId
+            }
+        }
 
         manager.onThoughtChunk = { chunk ->
             SwingUtilities.invokeLater {
@@ -282,6 +335,11 @@ h1, h2, h3, h4, h5, h6 { margin: 12px 0 6px 0; }
 p { margin: 4px 0; }
 ul, ol { padding-left: 20px; margin: 4px 0; }
 img { max-width: 100%; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: $borderColor; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: $secondaryFg; }
+::-webkit-scrollbar-corner { background: transparent; }
 </style></head><body>
 """)
 
@@ -353,6 +411,34 @@ img { max-width: 100%; }
         }
     }
 
+    private fun formatModelDisplay(acpValue: String): String {
+        if (acpValue.isEmpty() || acpValue == "default[]") return "Auto"
+        val modelOpt = sessionManager.getModelConfigOption()
+        val name = modelOpt?.options?.find { it.value == acpValue }?.name
+        if (name != null) return name
+
+        val base = acpValue.substringBefore("[")
+        val params = acpValue.substringAfter("[", "").trimEnd(']')
+        if (params.isEmpty()) return base
+
+        val tags = mutableListOf<String>()
+        for (kv in params.split(",")) {
+            val parts = kv.trim().split("=", limit = 2)
+            if (parts.size != 2) continue
+            val (key, value) = parts
+            if (key == "effort") continue
+            when {
+                value == "true" -> tags.add(key)
+                value == "false" -> {}
+                else -> tags.add(value)
+            }
+        }
+        return if (tags.isEmpty()) base else "$base ${tags.joinToString(" ")}"
+    }
+
+    private fun truncateModelName(name: String): String =
+        if (name.length > 22) name.take(20) + "\u2026" else name
+
     private fun colorHex(c: Color): String = String.format("#%02x%02x%02x", c.red, c.green, c.blue)
 
     // ───── Tool call detail ─────
@@ -407,6 +493,32 @@ img { max-width: 100%; }
         sessionManager.saveChatHistory("")
         hasWelcome = true
         renderFullPage()
+    }
+
+    private fun showModelSelector() {
+        val modelOpt = sessionManager.getModelConfigOption()
+        if (modelOpt == null || modelOpt.options.isNullOrEmpty()) {
+            JOptionPane.showMessageDialog(this, "No models available. Please connect first.", "Models", JOptionPane.INFORMATION_MESSAGE)
+            return
+        }
+
+        val currentValue = sessionManager.currentModelId.ifEmpty { modelOpt.currentValue ?: "" }
+        val popup = JPopupMenu()
+
+        for (opt in modelOpt.options) {
+            val isCurrent = opt.value == currentValue
+            val displayName = opt.name ?: opt.value
+            val item = JMenuItem("${if (isCurrent) "\u2713 " else "   "}$displayName")
+            item.toolTipText = opt.value
+            if (isCurrent) item.foreground = JBColor(Color(0x1565c0), Color(0x6cb6ff))
+            item.addActionListener {
+                sessionManager.switchModel(opt.value)
+                chatHistory.add(ChatEntry("system", "Switched to model: $displayName"))
+                renderFullPage()
+            }
+            popup.add(item)
+        }
+        popup.show(modelLabel, 0, -popup.preferredSize.height)
     }
 
     private fun showSessionHistory() {

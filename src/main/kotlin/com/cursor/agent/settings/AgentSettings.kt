@@ -18,6 +18,7 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         var autoApprovePermissions: Boolean = false,
         var autoConnect: Boolean = true,
         var defaultMode: String = "agent",
+        var selectedModel: String = "",
         var lastSessionId: String = "",
         var lastSessionCwd: String = "",
         var chatHistory: String = ""

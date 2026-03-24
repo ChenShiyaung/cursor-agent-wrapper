@@ -73,6 +73,7 @@ class AgentSettingsConfigurable : Configurable {
                 autoApprovePermissions = autoApproveBox?.isSelected ?: false,
                 autoConnect = autoConnectBox?.isSelected ?: true,
                 defaultMode = old.defaultMode,
+                selectedModel = old.selectedModel,
                 lastSessionId = old.lastSessionId,
                 lastSessionCwd = old.lastSessionCwd,
                 chatHistory = old.chatHistory

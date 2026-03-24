@@ -121,13 +121,14 @@ class ACPClient(
     private fun handleMessage(line: String) {
         try {
             val msg = gson.fromJson(line, JsonRpcIncoming::class.java)
-            log.info("Received: id=${msg.id}, method=${msg.method}, isResponse=${msg.isResponse}, isRequest=${msg.isRequest}, isNotification=${msg.isNotification}")
+            log.debug("Received: id=${msg.id}, method=${msg.method}")
 
             when {
                 msg.isResponse -> {
                     val id = msg.id ?: return
                     val deferred = pendingRequests.remove(id) ?: return
                     if (msg.error != null) {
+                        log.warn("ACP error id=$id: ${msg.error.message}")
                         deferred.completeExceptionally(
                             ACPException(msg.error.code, msg.error.message, msg.error.data)
                         )
@@ -194,7 +195,7 @@ class ACPClient(
                 val obj = params?.asJsonObject ?: return
                 val updateJson = obj.get("update")
                 val updateType = updateJson?.asJsonObject?.get("sessionUpdate")?.asString
-                log.info("session/update type=$updateType")
+                log.debug("session/update type=$updateType")
                 val update = gson.fromJson(updateJson, SessionUpdateContent::class.java)
                 onSessionUpdate?.invoke(update)
             }
@@ -213,12 +214,11 @@ class ACPClient(
         pendingRequests[id] = deferred
 
         val json = gson.toJson(request) + "\n"
-        log.info("Sending [$method] id=$id, connected=${isConnected}")
+        log.debug("Sending [$method] id=$id")
         synchronized(this) {
             writer?.write(json)
             writer?.flush()
         }
-        log.info("Sent [$method] id=$id, waiting for response...")
 
         return deferred.await()
     }
@@ -276,6 +276,12 @@ class ACPClient(
         )
         val result = sendRequest("session/prompt", params)
         return result?.let { gson.fromJson(it, PromptResult::class.java) }
+    }
+
+    suspend fun setConfigOption(sessionId: String, configId: String, value: String): SetConfigOptionResult? {
+        val params = SetConfigOptionParams(sessionId = sessionId, configId = configId, value = value)
+        val result = sendRequest("session/set_config_option", params)
+        return result?.let { gson.fromJson(it, SetConfigOptionResult::class.java) }
     }
 
     fun cancel(sessionId: String) {
