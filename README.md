@@ -1,4 +1,4 @@
-# Cursor Agent for DevEco Studio
+# Cursor Agent Wrapper
 
 一个 DevEco Studio / IntelliJ IDEA 插件，通过 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) 将 [Cursor Agent](https://cursor.com) 的 AI 编程能力集成到 IDE 中。
 
@@ -7,7 +7,7 @@
 ## 功能
 
 ### 聊天与交互
-- **多 Tab 聊天** — 在 IDE 右侧 Tool Window 中同时管理多个独立会话，每个 Tab 拥有独立的 Agent 连接（独立子进程）
+- **多 Tab 聊天** — 自定义横向可滚动 Tab 栏，同时管理多个独立会话，每个 Tab 拥有独立的 Agent 连接（独立子进程）
 - **流式输出** — 实时显示 Agent 的思考过程（紫色折叠区块）和生成内容
 - **模型切换** — 通过 `session/set_config_option` 在会话内无缝切换 AI 模型（Claude、GPT、Gemini 等 26+ 个 ACP 模型），无需断开重连
 - **Tab 重命名** — 双击 Tab 标题直接编辑会话名称，自动同步到本地数据库
@@ -28,7 +28,13 @@
 - **会话持久化** — 重启 IDE 自动恢复上一次打开的 Tab 及历史内容
 - **上下文恢复** — 通过 ACP `session/load` 尝试恢复 Agent 上下文记忆（需 Agent 支持），replay 历史消息由插件静默处理
 - **历史浏览** — 从 `~/.cursor/chats` 本地 SQLite 数据库浏览和重新打开历史会话
-- **会话删除** — 支持删除会话（含二次确认），同时清理本地 Cursor 数据文件
+- **会话删除** — 支持删除任意会话（含已打开的），删除后自动关闭对应 Tab 并跳转
+
+### 会话 ID 管理
+- 每个 Tab 持有一个稳定的 `chatId`，对应 Cursor 本地数据库中的目录名
+- 从历史打开的 Tab：`chatId` 为 DB 中的原始 ID，始终不变
+- 新建的 Tab：`chatId` 在 ACP 连接成功后由 `session/new` 返回的 sessionId 赋值
+- ACP 通信使用 `connection.sessionId`，与 UI 层的 `chatId` 解耦
 
 ## 前置条件
 
@@ -87,6 +93,7 @@
 7. 点击 **New Chat** 创建新的 Tab 会话
 8. 双击 Tab 标题可重命名会话
 9. 点击 Tab 上的 × 关闭会话并释放连接
+10. 滚轮滚动可横向浏览 Tab 栏
 
 ## 架构
 
@@ -104,12 +111,12 @@ src/main/kotlin/com/cursor/agent/
 │   ├── AgentSettings.kt              # 持久化设置（PersistentStateComponent）
 │   └── AgentSettingsConfigurable.kt  # Settings UI 面板
 └── ui/                               # UI 层
-    ├── AgentChatPanel.kt             # 多 Tab 容器 + 会话历史切换 + Tab 标题编辑
+    ├── AgentChatPanel.kt             # 自定义 Tab 栏 + CardLayout 内容切换 + 历史面板
     ├── AgentToolWindowFactory.kt     # Tool Window 注册工厂
     ├── ChatSessionTab.kt             # 单个聊天 Tab（输入、渲染、模型选择、权限弹窗）
     ├── ChatHtmlBuilder.kt            # HTML/CSS 生成 + highlight.js + 主题适配
     ├── ChatRenderer.kt               # JCEF 渲染器（含文件路径跳转）/ JTextPane 降级
-    ├── SessionHistoryPanel.kt        # 会话历史列表面板
+    ├── SessionHistoryPanel.kt        # 会话历史列表面板（含删除回调）
     └── MessageRenderer.kt            # Markdown → HTML 转换（IntelliJ GFM Parser）
 ```
 
@@ -124,7 +131,9 @@ User Input → ChatSessionTab → AgentConnection → ACPClient → agent acp (s
                                set_config_option
 ```
 
-### 多 Tab 架构
+### Tab 架构
+
+插件使用自定义 Tab 栏（`BoxLayout` + `JBScrollPane`）替代 `JTabbedPane`，避免原生 Tab 换行跳动和自定义 header 兼容性问题。每个 `TabButton` 支持点击切换、双击重命名、关闭按钮、hover 效果和选中高亮条。内容区域使用 `CardLayout` 按 Tab 切换。
 
 每个 `ChatSessionTab` 持有独立的 `AgentConnection`，各自管理一个 `agent acp` 子进程。Tab 的打开状态通过 `AgentSettings.projectOpenTabs` 按项目持久化，IDE 重启时自动恢复。
 

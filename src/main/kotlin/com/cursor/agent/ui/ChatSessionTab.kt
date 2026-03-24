@@ -22,13 +22,21 @@ import javax.swing.*
 class ChatSessionTab(
     private val project: Project,
     private val parentDisposable: Disposable,
-    val historyChatId: String?,
+    initialChatId: String?,
     private val onTitleChanged: (ChatSessionTab, String) -> Unit
 ) : JPanel(BorderLayout()), Disposable {
 
     private val log = Logger.getInstance(ChatSessionTab::class.java)
 
-    val connection = AgentConnection(project, historyChatId)
+    /**
+     * Stable identifier for this session, used for history matching and tab persistence.
+     * - From history: the DB chatId (never changes).
+     * - New chat: null until agent creates a session in .cursor/chats, then set to that ID.
+     */
+    var chatId: String? = initialChatId
+        private set
+
+    val connection = AgentConnection(project, initialChatId)
 
     private val inputArea: JBTextArea
     private val sendButton: JButton
@@ -58,17 +66,6 @@ class ChatSessionTab(
         tabTitle = title
         titleGenerated = true
     }
-
-    val effectiveSessionId: String?
-        get() = connection.sessionId ?: historyChatId
-
-    private var _resolvedPersistentId: String? = null
-
-    val persistentSessionId: String?
-        get() {
-            val resolved = _resolvedPersistentId ?: historyChatId ?: connection.sessionId
-            return resolved
-        }
 
     init {
         border = JBUI.Borders.empty(4)
@@ -130,8 +127,8 @@ class ChatSessionTab(
         setupCallbacks()
         updateStatus(AgentStatus.DISCONNECTED)
 
-        if (historyChatId != null) {
-            loadFromDb(historyChatId)
+        if (chatId != null) {
+            loadFromDb(chatId!!)
         } else {
             hasWelcome = true
             showConnectingOverlay()
@@ -208,12 +205,11 @@ class ChatSessionTab(
         connection.onStatusChanged = { status ->
             SwingUtilities.invokeLater { updateStatus(status) }
             if (status == AgentStatus.READY) {
-                if (historyChatId != null) {
-                    if (connection.sessionLoadSucceeded) {
-                        log.info("session/load succeeded for $historyChatId — agent has context memory")
-                    } else {
-                        log.info("session/load failed or unsupported for $historyChatId — agent has NO context memory (new session)")
-                    }
+                if (chatId != null) {
+                    log.info("Session ready: chatId=$chatId, acpSessionId=${connection.sessionId}, loadSucceeded=${connection.sessionLoadSucceeded}")
+                } else {
+                    chatId = connection.sessionId
+                    log.info("New session ready: chatId=$chatId")
                 }
                 SwingUtilities.invokeLater { onSessionReady?.invoke() }
             }
@@ -250,10 +246,10 @@ class ChatSessionTab(
                 if (stopReason == "cancelled") chatHistory.add(ChatEntry("system", "Request cancelled."))
                 renderFullPage()
             }
-            connection.sessionId?.let { sid ->
-                _resolvedPersistentId = sid
-                onSessionReady?.invoke()
+            if (chatId == null) {
+                connection.sessionId?.let { chatId = it }
             }
+            onSessionReady?.invoke()
             if (!titleGenerated) {
                 generateAndSaveTitle()
             }
@@ -356,17 +352,17 @@ class ChatSessionTab(
         if (title.isBlank()) return
 
         titleGenerated = true
-        val sid = connection.sessionId
+        val id = chatId
 
         SwingUtilities.invokeLater {
             tabTitle = title
             onTitleChanged(this, title)
         }
 
-        if (sid != null) {
+        if (id != null) {
             ApplicationManager.getApplication().executeOnPooledThread {
-                val updated = ChatHistoryService.updateSessionTitle(sid, title)
-                log.info("generateAndSaveTitle: sid=$sid title='$title' dbUpdated=$updated")
+                val updated = ChatHistoryService.updateSessionTitle(id, title)
+                log.info("generateAndSaveTitle: chatId=$id title='$title' dbUpdated=$updated")
             }
         }
     }

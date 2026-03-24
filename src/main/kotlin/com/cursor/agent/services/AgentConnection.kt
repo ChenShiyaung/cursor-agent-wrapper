@@ -93,16 +93,23 @@ class AgentConnection(
                         isLoadingSession = true
                         val loadResult = client.loadSession(chatId, cwd)
                         isLoadingSession = false
-                        sessionId = chatId
+                        if (loadResult?.sessionId != null) {
+                            sessionId = loadResult.sessionId
+                            log.info(">>> session/load returned sessionId=${loadResult.sessionId}")
+                        } else {
+                            sessionId = chatId
+                            log.info(">>> session/load returned null sessionId, using chatId=$chatId")
+                        }
                         sessionLoadSucceeded = true
-                        log.info(">>> session/load SUCCEEDED for chatId=$chatId, result=$loadResult")
+                        log.info(">>> session/load SUCCEEDED for chatId=$chatId")
                         loadResult
                     } catch (e: Exception) {
                         isLoadingSession = false
-                        log.warn(">>> session/load FAILED for chatId=$chatId: ${e.message}, falling back to session/new")
+                        log.warn(">>> session/load FAILED for chatId=$chatId: ${e.javaClass.simpleName}: ${e.message}")
+                        log.warn(">>> Falling back to session/new")
                         val newResult = client.newSession(cwd)
                         sessionId = newResult?.sessionId
-                        log.info(">>> session/new fallback created sessionId=${newResult?.sessionId}")
+                        log.info(">>> session/new fallback created sessionId=${newResult?.sessionId} (chatId was $chatId)")
                         newResult
                     }
                 } else if (chatId != null && !client.supportsLoadSession) {

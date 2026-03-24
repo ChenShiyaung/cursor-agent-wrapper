@@ -14,6 +14,7 @@ import javax.swing.*
 class SessionHistoryPanel(
     private val workspaceHash: String,
     private val onSessionSelected: (String) -> Unit,
+    private val onSessionDeleted: (String) -> Unit,
     private val onBack: () -> Unit
 ) : JPanel(BorderLayout()) {
 
@@ -88,7 +89,7 @@ class SessionHistoryPanel(
         return relX in btnLeft..btnRight && relY in btnTop..btnBottom
     }
 
-    fun refreshSessions(dark: Boolean, fontSize: Int, openSessionIds: Set<String>, activeSessionId: String? = null) {
+    fun refreshSessions(dark: Boolean, fontSize: Int, openSessionIds: Set<String>, activeSessionIds: Set<String> = emptySet()) {
         contentCards.show(contentPanel, "loading")
         listModel.clear()
 
@@ -108,7 +109,7 @@ class SessionHistoryPanel(
                     contentCards.show(contentPanel, "empty")
                 } else {
                     sessions.forEach { listModel.addElement(it) }
-                    sessionList.cellRenderer = SessionCellRenderer(dark, fontSize, openSessionIds, activeSessionId)
+                    sessionList.cellRenderer = SessionCellRenderer(dark, fontSize, openSessionIds, activeSessionIds)
                     contentCards.show(contentPanel, "list")
                 }
             }
@@ -121,12 +122,14 @@ class SessionHistoryPanel(
             "Confirm Delete", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE
         )
         if (confirm != JOptionPane.YES_OPTION) return
+        val chatId = session.chatId
         ApplicationManager.getApplication().executeOnPooledThread {
-            val ok = ChatHistoryService.deleteSession(session.chatId)
+            val ok = ChatHistoryService.deleteSession(chatId)
             SwingUtilities.invokeLater {
                 if (ok) {
                     listModel.removeElementAt(index)
                     if (listModel.isEmpty) contentCards.show(contentPanel, "empty")
+                    onSessionDeleted(chatId)
                 }
             }
         }
@@ -137,7 +140,7 @@ private class SessionCellRenderer(
     private val dark: Boolean,
     private val fs: Int,
     private val openSessionIds: Set<String>,
-    private val activeSessionId: String? = null
+    private val activeSessionIds: Set<String> = emptySet()
 ) : ListCellRenderer<ChatSession> {
 
     override fun getListCellRendererComponent(
@@ -145,7 +148,7 @@ private class SessionCellRenderer(
         index: Int, isSelected: Boolean, cellHasFocus: Boolean
     ): Component {
         val isOpen = value.chatId in openSessionIds
-        val isActive = value.chatId == activeSessionId
+        val isActive = value.chatId in activeSessionIds
         val accentColor = if (dark) Color(0x6c, 0xb6, 0xff) else Color(0x15, 0x65, 0xc0)
         val activeColor = if (dark) Color(0x4f, 0xc3, 0x7f) else Color(0x1b, 0x8a, 0x3e)
 

@@ -7,4 +7,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "cursor-agent-for-deveco"
+rootProject.name = "cursor-agent-wrapper"

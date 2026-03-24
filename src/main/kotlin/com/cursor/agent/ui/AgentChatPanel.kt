@@ -8,6 +8,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.*
@@ -21,10 +22,41 @@ class AgentChatPanel(
 
     private val log = Logger.getInstance(AgentChatPanel::class.java)
 
-    private val tabbedPane = JTabbedPane(JTabbedPane.TOP).apply {
-        tabLayoutPolicy = JTabbedPane.WRAP_TAB_LAYOUT
-    }
     private val tabs = mutableListOf<ChatSessionTab>()
+    private var selectedTab: ChatSessionTab? = null
+
+    private val contentCards = CardLayout()
+    private val contentPanel = JPanel(contentCards)
+
+    private val tabBarPanel = object : JPanel() {
+        init {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+        }
+        override fun getPreferredSize(): Dimension {
+            var w = 0
+            var h = 0
+            for (c in components) {
+                val ps = c.preferredSize
+                w += ps.width
+                h = maxOf(h, ps.height)
+            }
+            val ins = insets
+            return Dimension(w + ins.left + ins.right, h + ins.top + ins.bottom)
+        }
+    }
+    private val tabBarScroll = JBScrollPane(tabBarPanel,
+        JScrollPane.VERTICAL_SCROLLBAR_NEVER,
+        JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+    ).apply {
+        border = JBUI.Borders.customLine(UIUtil.getSeparatorColor(), 0, 0, 1, 0)
+        isOpaque = false
+        viewport.isOpaque = false
+        addMouseWheelListener { e ->
+            val hBar = horizontalScrollBar
+            hBar.value = hBar.value + e.unitsToScroll * hBar.unitIncrement
+        }
+    }
 
     private val outerCards = CardLayout()
     private val outerPanel = JPanel(outerCards)
@@ -44,16 +76,20 @@ class AgentChatPanel(
         toolbar.add(historyButton)
         toolbar.add(newChatButton)
 
-        tabbedPane.addChangeListener { saveOpenTabs() }
+        val topPanel = JPanel(BorderLayout()).apply {
+            add(toolbar, BorderLayout.NORTH)
+            add(tabBarScroll, BorderLayout.CENTER)
+        }
 
         val chatArea = JPanel(BorderLayout()).apply {
-            add(toolbar, BorderLayout.NORTH)
-            add(tabbedPane, BorderLayout.CENTER)
+            add(topPanel, BorderLayout.NORTH)
+            add(contentPanel, BorderLayout.CENTER)
         }
 
         historyPanel = SessionHistoryPanel(
             workspaceHash = workspaceHash(),
             onSessionSelected = { chatId -> onHistorySessionSelected(chatId) },
+            onSessionDeleted = { chatId -> onHistorySessionDeleted(chatId) },
             onBack = { outerCards.show(outerPanel, "tabs") }
         )
 
@@ -75,17 +111,17 @@ class AgentChatPanel(
     }
 
     private fun openHistorySession(chatId: String) {
-        val existing = tabs.find { it.effectiveSessionId == chatId || it.historyChatId == chatId }
+        val existing = tabs.find { it.chatId == chatId }
         if (existing != null) {
-            tabbedPane.selectedComponent = existing
+            selectTab(existing)
             return
         }
         ApplicationManager.getApplication().executeOnPooledThread {
             val displayTitle = resolveDisplayTitle(chatId)
             SwingUtilities.invokeLater {
-                val alreadyOpened = tabs.find { it.effectiveSessionId == chatId || it.historyChatId == chatId }
+                val alreadyOpened = tabs.find { it.chatId == chatId }
                 if (alreadyOpened != null) {
-                    tabbedPane.selectedComponent = alreadyOpened
+                    selectTab(alreadyOpened)
                     return@invokeLater
                 }
                 val tab = ChatSessionTab(project, parentDisposable, chatId) { t, title ->
@@ -100,13 +136,13 @@ class AgentChatPanel(
     private fun resolveDisplayTitle(chatId: String): String {
         val dbTitle = ChatHistoryService.readSessionTitle(chatId)
         if (!dbTitle.isNullOrBlank()) {
-            return if (dbTitle.length > 12) dbTitle.take(10) + "\u2026" else dbTitle
+            return if (dbTitle.length > 14) dbTitle.take(12) + "\u2026" else dbTitle
         }
         val previews = ChatHistoryService.readSessionMessages(chatId)
         val firstUser = previews.firstOrNull { it.role == "user" }?.content
         if (!firstUser.isNullOrBlank()) {
             val clean = firstUser.replace(Regex("\\s+"), " ").trim()
-            return if (clean.length > 12) clean.take(10) + "\u2026" else clean
+            return if (clean.length > 14) clean.take(12) + "\u2026" else clean
         }
         return "Chat"
     }
@@ -115,21 +151,65 @@ class AgentChatPanel(
         tabs.add(tab)
         tab.onSessionReady = { saveOpenTabs() }
         Disposer.register(this, tab)
-        tabbedPane.addTab(title, tab)
-        val idx = tabbedPane.indexOfComponent(tab)
-        tabbedPane.setTabComponentAt(idx, CloseableTabHeader(title, tab))
-        tabbedPane.selectedIndex = idx
+
+        val cardKey = System.identityHashCode(tab).toString()
+        contentPanel.add(tab, cardKey)
+
+        val header = TabButton(title, tab)
+        tabBarPanel.add(header)
+        tabBarPanel.revalidate()
+        tabBarPanel.repaint()
+
+        selectTab(tab)
+        saveOpenTabs()
+    }
+
+    private fun selectTab(tab: ChatSessionTab) {
+        if (selectedTab === tab) return
+        selectedTab = tab
+        val cardKey = System.identityHashCode(tab).toString()
+        contentCards.show(contentPanel, cardKey)
+        refreshTabBarSelection()
         saveOpenTabs()
     }
 
     private fun closeTab(tab: ChatSessionTab) {
-        val idx = tabbedPane.indexOfComponent(tab)
+        val idx = tabs.indexOf(tab)
         if (idx < 0) return
-        tabbedPane.removeTabAt(idx)
-        tabs.remove(tab)
+
+        val cardKey = System.identityHashCode(tab).toString()
+        contentPanel.remove(tab)
+        tabs.removeAt(idx)
+
+        val header = findTabButton(tab)
+        if (header != null) {
+            tabBarPanel.remove(header)
+            tabBarPanel.revalidate()
+            tabBarPanel.repaint()
+        }
+
         Disposer.dispose(tab)
         saveOpenTabs()
-        if (tabs.isEmpty()) openNewChat()
+
+        if (tabs.isEmpty()) {
+            selectedTab = null
+            openNewChat()
+        } else {
+            val newIdx = idx.coerceAtMost(tabs.size - 1)
+            selectTab(tabs[newIdx])
+        }
+    }
+
+    private fun findTabButton(tab: ChatSessionTab): TabButton? {
+        return tabBarPanel.components.filterIsInstance<TabButton>().find { it.tab === tab }
+    }
+
+    private fun refreshTabBarSelection() {
+        for (comp in tabBarPanel.components) {
+            if (comp is TabButton) {
+                comp.setActive(comp.tab === selectedTab)
+            }
+        }
     }
 
     private fun restoreOrNewChat() {
@@ -146,33 +226,25 @@ class AgentChatPanel(
     }
 
     private fun saveOpenTabs() {
-        val ids = tabs.mapNotNull { it.persistentSessionId }
+        val ids = tabs.mapNotNull { it.chatId }
         val joined = ids.joinToString(",")
         AgentSettings.getInstance().state.projectOpenTabs[projectKey] = joined
-        log.info("saveOpenTabs: projectKey=$projectKey ids=$joined")
-        for (tab in tabs) {
-            log.info("  tab: historyChatId=${tab.historyChatId} effectiveSessionId=${tab.effectiveSessionId} persistentSessionId=${tab.persistentSessionId}")
-        }
     }
 
     private fun updateTabTitle(tab: ChatSessionTab, title: String) {
-        val idx = tabbedPane.indexOfComponent(tab)
-        if (idx < 0) return
-        val shortTitle = if (title.length > 12) title.take(10) + "\u2026" else title
-        tabbedPane.setTitleAt(idx, shortTitle)
-        val header = tabbedPane.getTabComponentAt(idx)
-        if (header is CloseableTabHeader) header.setTitle(shortTitle)
+        val shortTitle = if (title.length > 14) title.take(12) + "\u2026" else title
+        val header = findTabButton(tab)
+        header?.setTitle(shortTitle)
     }
 
     private fun showHistory() {
-        val openIds = tabs.mapNotNull { it.effectiveSessionId ?: it.historyChatId }.toSet()
-        val selectedTab = tabbedPane.selectedComponent as? ChatSessionTab
-        val activeId = selectedTab?.effectiveSessionId ?: selectedTab?.historyChatId
+        val openIds = tabs.mapNotNull { it.chatId }.toSet()
+        val activeIds = selectedTab?.chatId?.let { setOf(it) } ?: emptySet()
         historyPanel.refreshSessions(
             ChatHtmlBuilder().isDark(),
             ChatHtmlBuilder().fontSize(),
             openIds,
-            activeId
+            activeIds
         )
         outerCards.show(outerPanel, "history")
     }
@@ -182,8 +254,13 @@ class AgentChatPanel(
         openHistorySession(chatId)
     }
 
+    private fun onHistorySessionDeleted(chatId: String) {
+        val tab = tabs.find { it.chatId == chatId } ?: return
+        closeTab(tab)
+    }
+
     private fun workspaceHash(): String {
-        val settings = com.cursor.agent.settings.AgentSettings.getInstance().state
+        val settings = AgentSettings.getInstance().state
         val cached = settings.projectWorkspaceHashes[project.basePath ?: ""]
         if (!cached.isNullOrBlank()) return cached
         val path = project.basePath ?: ""
@@ -191,36 +268,45 @@ class AgentChatPanel(
         return md5.digest(path.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 
-    override fun dispose() {
-        // tabs disposed by Disposer tree
-    }
+    override fun dispose() {}
 
-    private inner class CloseableTabHeader(
+    // ─── Custom Tab Button ──────────────────────────────────────────
+
+    private inner class TabButton(
         private var titleText: String,
-        private val tab: ChatSessionTab
-    ) : JPanel(BorderLayout(6, 0)) {
+        val tab: ChatSessionTab
+    ) : JPanel(BorderLayout(4, 0)) {
+
+        private var active = false
+        private var editing = false
+        private var activeEditor: JTextField? = null
+        private var globalClickListener: java.awt.event.AWTEventListener? = null
+
+        private val dark = !com.intellij.ui.JBColor.isBright()
+        private val activeBg = if (dark) Color(0x3C, 0x3F, 0x41) else Color(0xFF, 0xFF, 0xFF)
+        private val inactiveBg = if (dark) Color(0x2B, 0x2B, 0x2B) else Color(0xEC, 0xEC, 0xEC)
+        private val hoverBg = if (dark) Color(0x35, 0x38, 0x3A) else Color(0xF5, 0xF5, 0xF5)
+        private val activeBottomBar = if (dark) Color(0x4A, 0x88, 0xDA) else Color(0x40, 0x78, 0xC0)
 
         private val titleLabel = JBLabel(titleText).apply {
             font = UIUtil.getLabelFont()
             foreground = UIUtil.getLabelForeground()
             toolTipText = tab.tabTitle
+            border = JBUI.Borders.empty(0, 2)
         }
 
-        private var editing = false
-        private var activeEditor: JTextField? = null
-
-        private val closeBtnNormalColor = if (!com.intellij.ui.JBColor.isBright()) Color(0x88, 0x88, 0x88) else Color(0x99, 0x99, 0x99)
-        private val closeBtnHoverColor = if (!com.intellij.ui.JBColor.isBright()) Color(0xff, 0x66, 0x66) else Color(0xcc, 0x33, 0x33)
-        private val closeBtnHoverBg = if (!com.intellij.ui.JBColor.isBright()) Color(0x55, 0x55, 0x55) else Color(0xd8, 0xd8, 0xd8)
+        private val closeBtnNormalColor = if (dark) Color(0x88, 0x88, 0x88) else Color(0x99, 0x99, 0x99)
+        private val closeBtnHoverColor = if (dark) Color(0xff, 0x66, 0x66) else Color(0xcc, 0x33, 0x33)
+        private val closeBtnHoverBg = if (dark) Color(0x55, 0x55, 0x55) else Color(0xd8, 0xd8, 0xd8)
 
         private val closeBtn = object : JBLabel("\u00d7") {
             private var isHover = false
 
             init {
-                font = UIUtil.getLabelFont().deriveFont(Font.BOLD, 16f)
+                font = UIUtil.getLabelFont().deriveFont(Font.BOLD, 14f)
                 foreground = closeBtnNormalColor
                 cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                border = JBUI.Borders.empty(2, 6, 2, 6)
+                border = JBUI.Borders.empty(2, 4, 2, 4)
                 toolTipText = "Close"
                 isOpaque = false
                 horizontalAlignment = SwingConstants.CENTER
@@ -252,89 +338,102 @@ class AgentChatPanel(
             }
         }
 
+        private var isHover = false
+
+        override fun getMaximumSize(): Dimension = preferredSize
+        override fun getMinimumSize(): Dimension = preferredSize
+
         init {
             isOpaque = false
-            border = JBUI.Borders.empty(2, 0)
+            border = JBUI.Borders.empty(4, 6, 4, 2)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             add(titleLabel, BorderLayout.CENTER)
             add(closeBtn, BorderLayout.EAST)
 
-            val headerMouseHandler = object : java.awt.event.MouseAdapter() {
-                private fun dispatch(e: java.awt.event.MouseEvent) {
-                    if (editing) return
-                    val pt = SwingUtilities.convertPoint(e.component, e.point, tabbedPane)
-                    tabbedPane.dispatchEvent(java.awt.event.MouseEvent(
-                        tabbedPane, e.id, e.`when`, e.modifiersEx,
-                        pt.x, pt.y, e.clickCount, e.isPopupTrigger, e.button
-                    ))
-                }
+
+            addMouseListener(object : java.awt.event.MouseAdapter() {
                 override fun mousePressed(e: java.awt.event.MouseEvent) {
                     if (editing) { commitEditing(); e.consume(); return }
-                    val idx = tabbedPane.indexOfTabComponent(this@CloseableTabHeader)
-                    if (idx >= 0) tabbedPane.selectedIndex = idx
-                    dispatch(e)
+                    selectTab(tab)
                 }
-                override fun mouseEntered(e: java.awt.event.MouseEvent) { dispatch(e) }
-                override fun mouseExited(e: java.awt.event.MouseEvent) { dispatch(e) }
-                override fun mouseMoved(e: java.awt.event.MouseEvent) { dispatch(e) }
                 override fun mouseClicked(e: java.awt.event.MouseEvent) {
                     if (editing) return
                     if (e.clickCount == 2) startEditing()
                 }
+                override fun mouseEntered(e: java.awt.event.MouseEvent) {
+                    if (!editing) { isHover = true; repaint() }
+                }
+                override fun mouseExited(e: java.awt.event.MouseEvent) {
+                    isHover = false; repaint()
+                }
+            })
+            titleLabel.addMouseListener(object : java.awt.event.MouseAdapter() {
+                override fun mousePressed(e: java.awt.event.MouseEvent) {
+                    if (editing) { commitEditing(); e.consume(); return }
+                    selectTab(tab)
+                }
+                override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                    if (editing) return
+                    if (e.clickCount == 2) startEditing()
+                }
+                override fun mouseEntered(e: java.awt.event.MouseEvent) {
+                    if (!editing) { isHover = true; repaint() }
+                }
+                override fun mouseExited(e: java.awt.event.MouseEvent) {
+                    isHover = false; repaint()
+                }
+            })
+        }
+
+        override fun paintComponent(g: Graphics) {
+            val g2 = g.create() as Graphics2D
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.color = when {
+                active -> activeBg
+                isHover -> hoverBg
+                else -> inactiveBg
             }
-            titleLabel.addMouseListener(headerMouseHandler)
-            titleLabel.addMouseMotionListener(headerMouseHandler)
-            addMouseListener(headerMouseHandler)
-            addMouseMotionListener(headerMouseHandler)
+            g2.fillRect(0, 0, width, height)
+            if (active) {
+                g2.color = activeBottomBar
+                g2.fillRect(0, height - 2, width, 2)
+            }
+            g2.dispose()
+            super.paintComponent(g)
         }
 
-        private var globalClickListener: java.awt.event.AWTEventListener? = null
-
-        private fun clearTabbedPaneHover() {
-            tabbedPane.dispatchEvent(java.awt.event.MouseEvent(
-                tabbedPane, java.awt.event.MouseEvent.MOUSE_EXITED,
-                System.currentTimeMillis(), 0, -1, -1, 0, false
-            ))
+        fun setActive(isActive: Boolean) {
+            active = isActive
+            titleLabel.foreground = if (isActive) UIUtil.getLabelForeground() else UIUtil.getLabelDisabledForeground()
+            repaint()
         }
 
-        private fun isInsideTabbedPaneHeader(src: Component, pt: Point): Boolean {
-            val ptInPane = SwingUtilities.convertPoint(src, pt, tabbedPane)
-            val tabRunHeight = tabbedPane.getBoundsAt(0)?.let { it.y + it.height } ?: 30
-            return ptInPane.y < tabRunHeight && tabbedPane.contains(ptInPane)
+        fun setTitle(title: String) {
+            titleText = title
+            titleLabel.text = title
+            titleLabel.toolTipText = tab.tabTitle
+            titleLabel.foreground = if (active) UIUtil.getLabelForeground() else UIUtil.getLabelDisabledForeground()
         }
+
+        // ─── Editing ────────────────────────────────────────────
 
         private fun installGlobalClickInterceptor() {
             val listener = java.awt.event.AWTEventListener { event ->
                 if (!editing) return@AWTEventListener
                 val me = event as? java.awt.event.MouseEvent ?: return@AWTEventListener
                 val src = me.component ?: return@AWTEventListener
-
-                when (me.id) {
-                    java.awt.event.MouseEvent.MOUSE_PRESSED -> {
-                        val editor = activeEditor ?: return@AWTEventListener
-                        val clickPt = SwingUtilities.convertPoint(src, me.point, editor)
-                        if (!editor.contains(clickPt)) {
-                            SwingUtilities.invokeLater { commitEditing() }
-                            me.consume()
-                        }
-                    }
-                    java.awt.event.MouseEvent.MOUSE_MOVED,
-                    java.awt.event.MouseEvent.MOUSE_ENTERED,
-                    java.awt.event.MouseEvent.MOUSE_EXITED -> {
-                        try {
-                            if (src === tabbedPane || SwingUtilities.isDescendingFrom(src, tabbedPane)) {
-                                if (tabbedPane.tabCount > 0 && isInsideTabbedPaneHeader(src, me.point)) {
-                                    me.consume()
-                                    clearTabbedPaneHover()
-                                }
-                            }
-                        } catch (_: Exception) {}
+                if (me.id == java.awt.event.MouseEvent.MOUSE_PRESSED) {
+                    val editor = activeEditor ?: return@AWTEventListener
+                    val clickPt = SwingUtilities.convertPoint(src, me.point, editor)
+                    if (!editor.contains(clickPt)) {
+                        SwingUtilities.invokeLater { commitEditing() }
+                        me.consume()
                     }
                 }
             }
             globalClickListener = listener
             Toolkit.getDefaultToolkit().addAWTEventListener(
-                listener,
-                java.awt.AWTEvent.MOUSE_EVENT_MASK or java.awt.AWTEvent.MOUSE_MOTION_EVENT_MASK
+                listener, java.awt.AWTEvent.MOUSE_EVENT_MASK
             )
         }
 
@@ -346,8 +445,6 @@ class AgentChatPanel(
         private fun startEditing() {
             if (editing) return
             editing = true
-            clearTabbedPaneHover()
-            tabbedPane.putClientProperty("JTabbedPane.tabHoverEnabled", false)
 
             val editor = JTextField(tab.tabTitle).apply {
                 font = UIUtil.getLabelFont()
@@ -355,7 +452,6 @@ class AgentChatPanel(
                 border = JBUI.Borders.empty(0, 2)
             }
             activeEditor = editor
-
             editor.addActionListener { commitEditing() }
             editor.addKeyListener(object : java.awt.event.KeyAdapter() {
                 override fun keyPressed(e: java.awt.event.KeyEvent) {
@@ -368,7 +464,6 @@ class AgentChatPanel(
             revalidate()
             repaint()
             editor.requestFocusInWindow()
-
             installGlobalClickInterceptor()
         }
 
@@ -392,26 +487,21 @@ class AgentChatPanel(
             editing = false
             activeEditor = null
             removeGlobalClickInterceptor()
-            tabbedPane.putClientProperty("JTabbedPane.tabHoverEnabled", true)
             remove(editor)
             add(titleLabel, BorderLayout.CENTER)
             revalidate()
             repaint()
-            tabbedPane.requestFocusInWindow()
         }
 
         private fun applyRename(newTitle: String) {
-            val short = if (newTitle.length > 12) newTitle.take(10) + "\u2026" else newTitle
+            val short = if (newTitle.length > 14) newTitle.take(12) + "\u2026" else newTitle
             titleText = short
             titleLabel.text = short
             titleLabel.toolTipText = newTitle
-            titleLabel.foreground = UIUtil.getLabelForeground()
+            titleLabel.foreground = if (active) UIUtil.getLabelForeground() else UIUtil.getLabelDisabledForeground()
             tab.setTitleManually(newTitle)
 
-            val idx = tabbedPane.indexOfComponent(tab)
-            if (idx >= 0) tabbedPane.setTitleAt(idx, short)
-
-            val sid = tab.persistentSessionId
+            val sid = tab.chatId
             if (sid != null) {
                 ApplicationManager.getApplication().executeOnPooledThread {
                     ChatHistoryService.updateSessionTitle(sid, newTitle)
@@ -420,11 +510,8 @@ class AgentChatPanel(
             }
         }
 
-        fun setTitle(title: String) {
-            titleText = title
-            titleLabel.text = title
-            titleLabel.toolTipText = tab.tabTitle
-            titleLabel.foreground = UIUtil.getLabelForeground()
+        fun triggerEditing() {
+            if (!editing) startEditing()
         }
     }
 }
