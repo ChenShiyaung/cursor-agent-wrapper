@@ -56,6 +56,7 @@ class ChatSessionTab(
     private val chatHistory = mutableListOf<ChatEntry>()
     private val htmlBuilder = ChatHtmlBuilder()
     private val chatRenderer: ChatRenderer
+    private val swingRenderer: SwingChatRenderer?
 
     private var cachedModelPopup: JPopupMenu? = null
     private var cachedModelValue: String? = null
@@ -84,12 +85,9 @@ class ChatSessionTab(
         toolbar.add(Box.createHorizontalStrut(4))
         toolbar.add(statusLabel)
 
-        chatRenderer = try {
-            JcefChatRenderer(parentDisposable, project)
-        } catch (e: Throwable) {
-            log.warn("JCEF not available, falling back to JTextPane: ${e.message}")
-            TextPaneChatRenderer()
-        }
+        val sr = SwingChatRenderer(parentDisposable, project)
+        swingRenderer = sr
+        chatRenderer = sr
 
         val dark = htmlBuilder.isDark()
         val savedModel = com.cursor.agent.settings.AgentSettings.getInstance().state.selectedModel
@@ -294,10 +292,18 @@ class ChatSessionTab(
     private val streamThrottleMs = 150L
 
     private fun renderFullPage() {
-        chatRenderer.setHtml(htmlBuilder.buildFullHtml(
-            chatHistory, hasWelcome, toolCallOrder.toList(), HashMap(toolCallElements),
-            currentThought, isThinking, currentAgentMessage, project.basePath
-        ))
+        val sr = swingRenderer
+        if (sr != null) {
+            sr.renderMessages(
+                chatHistory, hasWelcome, toolCallOrder.toList(), HashMap(toolCallElements),
+                currentThought, isThinking, currentAgentMessage, project.basePath
+            )
+        } else {
+            chatRenderer.setHtml(htmlBuilder.buildFullHtml(
+                chatHistory, hasWelcome, toolCallOrder.toList(), HashMap(toolCallElements),
+                currentThought, isThinking, currentAgentMessage, project.basePath
+            ))
+        }
     }
 
     private fun renderStreaming() {
@@ -325,49 +331,13 @@ class ChatSessionTab(
 
     private fun doStreamUpdate() {
         lastStreamRender = System.currentTimeMillis()
-
-        fun escapeJs(s: String) = s
-            .replace("\\", "\\\\")
-            .replace("`", "\\`")
-            .replace("\${", "\\\${")
-            .replace("\n", "\\n")
-            .replace("\r", "")
-
-        val js = StringBuilder("(function(){")
-
-        if (toolCallOrder.isNotEmpty()) {
-            val lastInfo = toolCallElements[toolCallOrder.last()]
-            if (lastInfo != null) {
-                val icon = when (lastInfo.status) { "in_progress" -> "\u25b6"; "completed" -> "\u2713"; "error" -> "\u2717"; else -> "\u25cf" }
-                val title = lastInfo.title ?: lastInfo.kind ?: "tool call"
-                val detail = ChatHtmlBuilder.extractToolCallDetail(lastInfo, project.basePath)
-                val detailStr = if (detail.isNotEmpty()) " $detail" else ""
-                val countStr = if (toolCallOrder.size > 1) " (${toolCallOrder.size} calls)" else ""
-                val toolText = escapeJs(MessageRenderer.escapeHtml("$icon $title$detailStr [${lastInfo.status ?: "pending"}]$countStr"))
-                js.append("var tl=document.getElementById('stream-tool');if(tl){tl.style.display='';tl.innerHTML=`$toolText`;}")
-            }
+        val sr = swingRenderer
+        if (sr != null) {
+            sr.appendStreamingUpdate(
+                currentThought, isThinking, currentAgentMessage,
+                toolCallOrder.toList(), HashMap(toolCallElements), project.basePath
+            )
         }
-
-        if (currentThought.isNotEmpty()) {
-            val lines = currentThought.toString().trimEnd().lines()
-            val lastLine = if (lines.size <= 1) MessageRenderer.escapeHtml(lines.firstOrNull() ?: "")
-                else "... " + MessageRenderer.escapeHtml(lines.last())
-            val label = if (isThinking) "\u25cf Thinking..." else "Thought"
-            val thoughtHtml = escapeJs("<span class=\"thought-label\">$label</span><br/>$lastLine")
-            js.append("var te=document.getElementById('stream-thought');if(te){te.style.display='';te.innerHTML=`$thoughtHtml`;}")
-        }
-
-        if (currentAgentMessage.isNotEmpty()) {
-            val rendered = MessageRenderer.renderMarkdown(currentAgentMessage.toString())
-            val msgHtml = escapeJs("<div class=\"agent-name\">Agent</div>$rendered")
-            js.append("var me=document.getElementById('stream-message');if(me){me.style.display='';me.innerHTML=`$msgHtml`;}")
-        }
-
-        js.append("window.scrollTo(0,document.body.scrollHeight);")
-        js.append("if(typeof hljs!=='undefined'){document.querySelectorAll('#stream-message pre code:not(.hljs)').forEach(function(b){hljs.highlightElement(b);});}")
-        js.append("})();")
-
-        chatRenderer.executeJs(js.toString())
     }
 
     private fun formatModelDisplay(acpValue: String): String {
@@ -455,19 +425,13 @@ class ChatSessionTab(
     }
 
     private fun showConnectingOverlay() {
-        val dark = htmlBuilder.isDark()
-        val fs = htmlBuilder.fontSize()
-        val bg = ChatHtmlBuilder.colorHex(UIUtil.getPanelBackground())
-        val fg = if (dark) "#999" else "#666"
-        chatRenderer.setHtml("""<!DOCTYPE html><html><head><meta charset="utf-8">
-<style>
-body { margin:0; background:$bg; display:flex; align-items:center; justify-content:center; height:100vh; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
-.loader { text-align:center; color:$fg; font-size:${fs}px; }
-.spinner { width:28px; height:28px; border:3px solid ${if (dark) "#444" else "#ddd"}; border-top:3px solid ${if (dark) "#6cb6ff" else "#1565c0"}; border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto 12px; }
-@keyframes spin { to { transform:rotate(360deg); } }
-</style></head><body>
-<div class="loader"><div class="spinner"></div>Connecting...</div>
-</body></html>""")
+        if (swingRenderer != null) {
+            swingRenderer.renderMessages(
+                listOf(ChatEntry("system", "Connecting...")),
+                false, emptyList(), emptyMap(),
+                "", false, "", null
+            )
+        }
     }
 
     private fun updateStatus(status: AgentStatus) {
