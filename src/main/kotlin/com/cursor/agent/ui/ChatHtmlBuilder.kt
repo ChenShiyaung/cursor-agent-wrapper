@@ -55,35 +55,40 @@ class ChatHtmlBuilder {
         val codeHeaderBg = if (dark) "#1e1e2e" else "#f0eff4"
         val codeHeaderFg = if (dark) "#888" else "#777"
 
-        val hljsTheme = if (dark) "vs2015" else "intellij-light"
         val copyBtnBg = if (dark) "#353545" else "#e4e0f0"
         val copyBtnHover = if (dark) "#454560" else "#d0c8e8"
         val copyBtnFg = if (dark) "#aaa" else "#666"
 
+        val hljsCss = JcefChatRenderer.getHljsCss(dark)
+        val hljsJs = JcefChatRenderer.getHljsJs()
+
         val sb = StringBuilder()
         sb.append("""<!DOCTYPE html><html><head><meta charset="utf-8">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/$hljsTheme.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+<style>$hljsCss</style>
+<script>$hljsJs</script>
 <style>
 * { box-sizing: border-box; }
+html { overflow-y: auto; overflow-x: hidden; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: ${fs}px; color: $fg; background: $bg; margin: 0; padding: 8px; line-height: 1.5; }
+.chat-container { contain: layout style; }
 .welcome { text-align: center; padding: 30px 10px; color: $secondaryFg; }
 .welcome h2 { color: $fg; margin: 0 0 8px 0; }
 .welcome p { margin: 4px 0; }
-.user-bubble { background: $userBubble; padding: 8px 12px; margin: 8px 0; border-radius: 6px; }
-.agent-bubble { background: $agentBubble; padding: 8px 12px; margin: 8px 0; border-radius: 6px; }
+.user-bubble, .agent-bubble { padding: 8px 12px; margin: 8px 0; border-radius: 6px; contain: content; }
+.user-bubble { background: $userBubble; }
+.agent-bubble { background: $agentBubble; }
 .user-name { color: $userNameC; font-weight: bold; margin-bottom: 4px; }
 .agent-name { color: $agentNameC; font-weight: bold; margin-bottom: 4px; }
 .thought { background: $thoughtBg; border-left: 3px solid $thoughtBorder; padding: 6px 10px; margin: 4px 0; color: $thoughtC; font-size: ${fs - 1}px; border-radius: 0 4px 4px 0; }
 .thought-label { font-weight: bold; }
 .tool-call { background: $toolBg; border-left: 3px solid $toolBorder; padding: 4px 8px; margin: 2px 0; color: $toolC; font-size: ${fs - 1}px; border-radius: 0 4px 4px 0; }
 .system { text-align: center; color: $secondaryFg; font-style: italic; font-size: ${fs - 1}px; margin: 8px 0; }
-.code-block-wrapper { position: relative; margin: 8px 0; border-radius: 8px; overflow: hidden; border: 1px solid $codeBlockBorder; }
+.code-block-wrapper { position: relative; margin: 8px 0; border-radius: 8px; overflow: hidden; border: 1px solid $codeBlockBorder; contain: layout style; }
 .code-block-header { display: flex; justify-content: space-between; align-items: center; background: $codeHeaderBg; padding: 4px 12px; font-size: ${fs - 2}px; color: $codeHeaderFg; }
 .code-block-header .lang-tag { font-family: 'JetBrains Mono', Consolas, monospace; letter-spacing: 0.3px; font-size: ${fs - 1}px; font-weight: 600; }
 .code-block-header .lang-tag a { color: inherit; text-decoration: none; cursor: pointer; }
 .code-block-header .lang-tag a:hover { text-decoration: underline; color: $userNameC; }
-.copy-btn { background: $copyBtnBg; border: none; border-radius: 4px; color: $copyBtnFg; cursor: pointer; padding: 3px 10px; font-size: ${fs - 2}px; line-height: 1.4; transition: all 0.2s; }
+.copy-btn { background: $copyBtnBg; border: none; border-radius: 4px; color: $copyBtnFg; cursor: pointer; padding: 3px 10px; font-size: ${fs - 2}px; line-height: 1.4; transition: background 0.15s; }
 .copy-btn:hover { background: $copyBtnHover; color: $fg; }
 .code-block-wrapper pre { margin: 0; border: none; border-radius: 0; }
 pre { padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace; font-size: ${fs - 1}px; line-height: 1.5; border: 1px solid $codeBlockBorder; background: $codeBg; color: $codeFg; margin: 6px 0; }
@@ -105,7 +110,7 @@ img { max-width: 100%; }
 ::-webkit-scrollbar-thumb { background: $borderColor; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: $secondaryFg; }
 ::-webkit-scrollbar-corner { background: transparent; }
-</style></head><body>
+</style></head><body><div class="chat-container">
 """)
 
         if (hasWelcome && chatHistory.isEmpty()) {
@@ -147,23 +152,30 @@ img { max-width: 100%; }
                 val detail = extractToolCallDetail(info, projectBasePath)
                 val detailStr = if (detail.isNotEmpty()) " $detail" else ""
                 val countStr = if (toolCallOrder.size > 1) " (${toolCallOrder.size} calls)" else ""
-                sb.append("""<div class="tool-call">${MessageRenderer.escapeHtml("$icon $title$detailStr [${info.status ?: "pending"}]$countStr")}</div>""")
+                sb.append("""<div id="stream-tool" class="tool-call">${MessageRenderer.escapeHtml("$icon $title$detailStr [${info.status ?: "pending"}]$countStr")}</div>""")
             }
+        } else {
+            sb.append("""<div id="stream-tool" class="tool-call" style="display:none;"></div>""")
         }
 
         if (currentThought.isNotEmpty()) {
             val label = if (isThinking) "\u25cf Thinking..." else "Thought"
-            sb.append("""<div class="thought"><span class="thought-label">$label</span><br/>""")
+            sb.append("""<div id="stream-thought" class="thought"><span class="thought-label">$label</span><br/>""")
             sb.append(truncateThought(currentThought.toString()))
             sb.append("</div>")
+        } else {
+            sb.append("""<div id="stream-thought" class="thought" style="display:none;"></div>""")
         }
 
         if (currentAgentMessage.isNotEmpty()) {
-            sb.append("""<div class="agent-bubble"><div class="agent-name">Agent</div>""")
+            sb.append("""<div id="stream-message" class="agent-bubble"><div class="agent-name">Agent</div>""")
             sb.append(MessageRenderer.renderMarkdown(currentAgentMessage.toString()))
             sb.append("</div>")
+        } else {
+            sb.append("""<div id="stream-message" class="agent-bubble" style="display:none;"><div class="agent-name">Agent</div></div>""")
         }
 
+        sb.append("</div>") // close chat-container
         sb.append(HIGHLIGHT_SCRIPT)
         return sb.toString()
     }

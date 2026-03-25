@@ -123,14 +123,17 @@ class SessionHistoryPanel(
         )
         if (confirm != JOptionPane.YES_OPTION) return
         val chatId = session.chatId
+        onSessionDeleted(chatId)
         ApplicationManager.getApplication().executeOnPooledThread {
+            Thread.sleep(500)
             val ok = ChatHistoryService.deleteSession(chatId)
+            if (!ok) {
+                Thread.sleep(1000)
+                ChatHistoryService.deleteSession(chatId)
+            }
             SwingUtilities.invokeLater {
-                if (ok) {
-                    listModel.removeElementAt(index)
-                    if (listModel.isEmpty) contentCards.show(contentPanel, "empty")
-                    onSessionDeleted(chatId)
-                }
+                listModel.removeElementAt(index)
+                if (listModel.isEmpty) contentCards.show(contentPanel, "empty")
             }
         }
     }

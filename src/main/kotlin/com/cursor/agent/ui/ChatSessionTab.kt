@@ -228,20 +228,21 @@ class ChatSessionTab(
             }
         }
         connection.onThoughtChunk = { chunk ->
-            SwingUtilities.invokeLater { isThinking = true; currentThought.append(chunk); renderFullPage() }
+            SwingUtilities.invokeLater { isThinking = true; currentThought.append(chunk); renderStreaming() }
         }
         connection.onMessageChunk = { chunk ->
-            SwingUtilities.invokeLater { currentAgentMessage.append(chunk); renderFullPage() }
+            SwingUtilities.invokeLater { currentAgentMessage.append(chunk); renderStreaming() }
         }
         connection.onToolCallUpdate = { info ->
             SwingUtilities.invokeLater {
                 if (!toolCallElements.containsKey(info.toolCallId)) toolCallOrder.add(info.toolCallId)
                 toolCallElements[info.toolCallId] = info
-                renderFullPage()
+                renderStreaming()
             }
         }
         connection.onPromptFinished = { stopReason ->
             SwingUtilities.invokeLater {
+                isStreaming = false
                 finalizeAgentMessage()
                 if (stopReason == "cancelled") chatHistory.add(ChatEntry("system", "Request cancelled."))
                 renderFullPage()
@@ -271,6 +272,7 @@ class ChatSessionTab(
         chatHistory.add(ChatEntry("user", text))
         currentAgentMessage.clear(); currentThought.clear(); isThinking = false
         toolCallElements.clear(); toolCallOrder.clear()
+        isStreaming = true
         renderFullPage()
         connection.sendPrompt(text)
     }
@@ -286,11 +288,86 @@ class ChatSessionTab(
         toolCallElements.clear(); toolCallOrder.clear()
     }
 
+    private var isStreaming = false
+    private var streamDirty = false
+    private var lastStreamRender = 0L
+    private val streamThrottleMs = 150L
+
     private fun renderFullPage() {
         chatRenderer.setHtml(htmlBuilder.buildFullHtml(
             chatHistory, hasWelcome, toolCallOrder.toList(), HashMap(toolCallElements),
             currentThought, isThinking, currentAgentMessage, project.basePath
         ))
+    }
+
+    private fun renderStreaming() {
+        if (!isStreaming) {
+            renderFullPage()
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastStreamRender < streamThrottleMs) {
+            if (!streamDirty) {
+                streamDirty = true
+                Timer(streamThrottleMs.toInt(), null).apply {
+                    isRepeats = false
+                    addActionListener {
+                        streamDirty = false
+                        doStreamUpdate()
+                    }
+                    start()
+                }
+            }
+            return
+        }
+        doStreamUpdate()
+    }
+
+    private fun doStreamUpdate() {
+        lastStreamRender = System.currentTimeMillis()
+
+        fun escapeJs(s: String) = s
+            .replace("\\", "\\\\")
+            .replace("`", "\\`")
+            .replace("\${", "\\\${")
+            .replace("\n", "\\n")
+            .replace("\r", "")
+
+        val js = StringBuilder("(function(){")
+
+        if (toolCallOrder.isNotEmpty()) {
+            val lastInfo = toolCallElements[toolCallOrder.last()]
+            if (lastInfo != null) {
+                val icon = when (lastInfo.status) { "in_progress" -> "\u25b6"; "completed" -> "\u2713"; "error" -> "\u2717"; else -> "\u25cf" }
+                val title = lastInfo.title ?: lastInfo.kind ?: "tool call"
+                val detail = ChatHtmlBuilder.extractToolCallDetail(lastInfo, project.basePath)
+                val detailStr = if (detail.isNotEmpty()) " $detail" else ""
+                val countStr = if (toolCallOrder.size > 1) " (${toolCallOrder.size} calls)" else ""
+                val toolText = escapeJs(MessageRenderer.escapeHtml("$icon $title$detailStr [${lastInfo.status ?: "pending"}]$countStr"))
+                js.append("var tl=document.getElementById('stream-tool');if(tl){tl.style.display='';tl.innerHTML=`$toolText`;}")
+            }
+        }
+
+        if (currentThought.isNotEmpty()) {
+            val lines = currentThought.toString().trimEnd().lines()
+            val lastLine = if (lines.size <= 1) MessageRenderer.escapeHtml(lines.firstOrNull() ?: "")
+                else "... " + MessageRenderer.escapeHtml(lines.last())
+            val label = if (isThinking) "\u25cf Thinking..." else "Thought"
+            val thoughtHtml = escapeJs("<span class=\"thought-label\">$label</span><br/>$lastLine")
+            js.append("var te=document.getElementById('stream-thought');if(te){te.style.display='';te.innerHTML=`$thoughtHtml`;}")
+        }
+
+        if (currentAgentMessage.isNotEmpty()) {
+            val rendered = MessageRenderer.renderMarkdown(currentAgentMessage.toString())
+            val msgHtml = escapeJs("<div class=\"agent-name\">Agent</div>$rendered")
+            js.append("var me=document.getElementById('stream-message');if(me){me.style.display='';me.innerHTML=`$msgHtml`;}")
+        }
+
+        js.append("window.scrollTo(0,document.body.scrollHeight);")
+        js.append("if(typeof hljs!=='undefined'){document.querySelectorAll('#stream-message pre code:not(.hljs)').forEach(function(b){hljs.highlightElement(b);});}")
+        js.append("})();")
+
+        chatRenderer.executeJs(js.toString())
     }
 
     private fun formatModelDisplay(acpValue: String): String {

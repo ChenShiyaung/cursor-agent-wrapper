@@ -20,11 +20,38 @@ import javax.swing.SwingUtilities
 interface ChatRenderer {
     val component: JComponent
     fun setHtml(html: String)
+    fun executeJs(js: String) {}
 }
 
 class JcefChatRenderer(parentDisposable: Disposable, private val project: Project? = null) : ChatRenderer {
     private val log = Logger.getInstance(JcefChatRenderer::class.java)
     private val browser: com.intellij.ui.jcef.JBCefBrowser
+
+    companion object {
+        private var cachedHljsJs: String? = null
+        private var cachedHljsCssDark: String? = null
+        private var cachedHljsCssLight: String? = null
+
+        private fun loadResource(path: String): String {
+            return JcefChatRenderer::class.java.getResourceAsStream(path)
+                ?.bufferedReader()?.readText() ?: ""
+        }
+
+        fun getHljsJs(): String {
+            if (cachedHljsJs == null) cachedHljsJs = loadResource("/hljs/highlight.min.js")
+            return cachedHljsJs!!
+        }
+
+        fun getHljsCss(dark: Boolean): String {
+            return if (dark) {
+                if (cachedHljsCssDark == null) cachedHljsCssDark = loadResource("/hljs/vs2015.min.css")
+                cachedHljsCssDark!!
+            } else {
+                if (cachedHljsCssLight == null) cachedHljsCssLight = loadResource("/hljs/intellij-light.min.css")
+                cachedHljsCssLight!!
+            }
+        }
+    }
 
     init {
         if (!com.intellij.ui.jcef.JBCefApp.isSupported()) {
@@ -84,6 +111,10 @@ class JcefChatRenderer(parentDisposable: Disposable, private val project: Projec
 
     override fun setHtml(html: String) {
         browser.loadHTML(html)
+    }
+
+    override fun executeJs(js: String) {
+        browser.cefBrowser.executeJavaScript(js, "about:blank", 0)
     }
 }
 
