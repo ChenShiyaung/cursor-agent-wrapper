@@ -1,5 +1,6 @@
 package com.cursor.agent.ui
 
+import com.cursor.agent.acp.ContentBlock
 import com.cursor.agent.acp.ConfigOptionValue
 import com.cursor.agent.acp.ToolCallInfo
 import com.cursor.agent.services.*
@@ -14,10 +15,23 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.*
+import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.Transferable
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDragEvent
+import java.awt.dnd.DropTargetDropEvent
+import java.awt.dnd.DropTargetEvent
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
+import java.io.File
+import java.net.URI
+import java.nio.file.Files
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.*
+import javax.swing.filechooser.FileNameExtensionFilter
 
 class ChatSessionTab(
     private val project: Project,
@@ -25,6 +39,11 @@ class ChatSessionTab(
     initialChatId: String?,
     private val onTitleChanged: (ChatSessionTab, String) -> Unit
 ) : JPanel(BorderLayout()), Disposable {
+    private data class PendingImage(
+        val displayName: String,
+        val pathKey: String,
+        val block: ContentBlock
+    )
 
     private val log = Logger.getInstance(ChatSessionTab::class.java)
 
@@ -41,14 +60,19 @@ class ChatSessionTab(
     private val inputArea: JBTextArea
     private val sendButton: JButton
     private val cancelButton: JButton
+    private val uploadImageButton: JButton
     private val statusLabel: JBLabel
     private val modelLabel: JBLabel
+    private val attachmentPanel: JPanel
+    private val inputNormalBorder = JBUI.Borders.empty(6)
+    private val inputDropBorder = JBUI.Borders.customLine(JBColor(Color(0x4A, 0x88, 0xDA), Color(0x6C, 0xB6, 0xFF)), 2)
 
     private val currentAgentMessage = StringBuilder()
     private val currentThought = StringBuilder()
     private var isThinking = false
     private var hasWelcome = false
     private var titleGenerated = false
+    private val pendingImages = mutableListOf<PendingImage>()
 
     private val toolCallElements = ConcurrentHashMap<String, ToolCallInfo>()
     private val toolCallOrder = mutableListOf<String>()
@@ -74,6 +98,14 @@ class ChatSessionTab(
         cancelButton = JButton("Cancel").apply {
             isEnabled = false
             addActionListener { connection.cancelPrompt() }
+        }
+        uploadImageButton = JButton("Upload Image").apply {
+            addActionListener { pickLocalImages() }
+        }
+        attachmentPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            isVisible = false
         }
         val reconnectButton = JButton("Reconnect").apply {
             addActionListener { connection.disconnect(); connection.connect() }
@@ -105,9 +137,10 @@ class ChatSessionTab(
         inputArea = JBTextArea(3, 0).apply {
             lineWrap = true; wrapStyleWord = true
             font = UIUtil.getLabelFont().deriveFont(htmlBuilder.fontSize().toFloat())
-            border = JBUI.Borders.empty(6)
+            border = inputNormalBorder
             emptyText.text = "Ask Cursor Agent... (Enter to send, Shift+Enter for newline)"
         }
+        installImageDropSupport()
         inputArea.addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
                 if (e.keyCode == KeyEvent.VK_ENTER) {
@@ -167,9 +200,15 @@ class ChatSessionTab(
     private fun buildComposerPanel(): JPanel {
         val bottomBar = JPanel(BorderLayout(4, 0)).apply {
             border = JBUI.Borders.empty(4, 6, 4, 6)
-            add(modelLabel, BorderLayout.WEST)
+            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                isOpaque = false
+                add(modelLabel)
+                add(uploadImageButton)
+            }
+            add(leftPanel, BorderLayout.WEST)
             val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
             rightPanel.add(cancelButton); rightPanel.add(sendButton)
+            rightPanel.isOpaque = false
             add(rightPanel, BorderLayout.EAST)
         }
         val inputScrollPane = JBScrollPane(inputArea).apply {
@@ -191,7 +230,13 @@ class ChatSessionTab(
             }
         }.apply {
             border = JBUI.Borders.empty(2)
-            add(inputScrollPane, BorderLayout.CENTER); add(bottomBar, BorderLayout.SOUTH)
+            add(inputScrollPane, BorderLayout.CENTER)
+            val bottomContainer = JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(attachmentPanel, BorderLayout.NORTH)
+                add(bottomBar, BorderLayout.SOUTH)
+            }
+            add(bottomContainer, BorderLayout.SOUTH)
         }
         inputArea.isOpaque = false
         inputScrollPane.isOpaque = false; inputScrollPane.viewport.isOpaque = false
@@ -262,19 +307,274 @@ class ChatSessionTab(
 
     private fun onSend() {
         val text = inputArea.text.trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty() && pendingImages.isEmpty()) return
         if (connection.status != AgentStatus.READY) {
             if (connection.status == AgentStatus.DISCONNECTED) connection.connect()
             return
         }
+        if (pendingImages.isNotEmpty() && !connection.supportsImagePrompt) {
+            JOptionPane.showMessageDialog(
+                this,
+                "Current ACP agent does not advertise image prompt capability.",
+                "Image Not Supported",
+                JOptionPane.WARNING_MESSAGE
+            )
+            return
+        }
+        val imagesToSend = pendingImages.map { it.block }
+        val imageSummary = pendingImages.joinToString(", ") { it.displayName }
         inputArea.text = ""
         if (hasWelcome) { chatHistory.clear(); hasWelcome = false }
-        chatHistory.add(ChatEntry("user", text))
+        chatHistory.add(ChatEntry("user", buildUserPreview(text, imageSummary, imagesToSend.size)))
+        pendingImages.clear()
+        refreshAttachmentLabel()
         currentAgentMessage.clear(); currentThought.clear(); isThinking = false
         toolCallElements.clear(); toolCallOrder.clear()
         isStreaming = true
         renderFullPage()
-        connection.sendPrompt(text)
+        connection.sendPrompt(text, imagesToSend)
+    }
+
+    private fun buildUserPreview(text: String, imageSummary: String, imageCount: Int): String {
+        if (imageCount <= 0) return text
+        val header = "Attached images ($imageCount): $imageSummary"
+        return if (text.isBlank()) header else "$text\n\n$header"
+    }
+
+    private fun refreshAttachmentLabel() {
+        attachmentPanel.removeAll()
+        if (pendingImages.isEmpty()) {
+            attachmentPanel.isVisible = false
+            attachmentPanel.revalidate()
+            attachmentPanel.repaint()
+            return
+        }
+
+        attachmentPanel.add(JBLabel("Pending images:").apply {
+            foreground = JBColor.GRAY
+            border = JBUI.Borders.empty(0, 0, 2, 0)
+            alignmentX = LEFT_ALIGNMENT
+        })
+        pendingImages.forEach { image ->
+            attachmentPanel.add(createAttachmentChip(image))
+        }
+
+        attachmentPanel.isVisible = true
+        attachmentPanel.revalidate()
+        attachmentPanel.repaint()
+    }
+
+    private fun createAttachmentChip(image: PendingImage): JComponent {
+        val chip = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.customLine(
+                if (htmlBuilder.isDark()) Color(0x55, 0x55, 0x55) else Color(0xcc, 0xcc, 0xcc),
+                1
+            )
+            alignmentX = LEFT_ALIGNMENT
+        }
+        val nameLabel = JBLabel(image.displayName).apply {
+            border = JBUI.Borders.empty(1, 4, 1, 2)
+        }
+        val removeBtn = JButton("×").apply {
+            isFocusable = false
+            margin = Insets(0, 4, 0, 4)
+            toolTipText = "Remove image"
+            addActionListener {
+                pendingImages.removeAll { it.pathKey == image.pathKey }
+                refreshAttachmentLabel()
+            }
+        }
+        chip.add(nameLabel)
+        chip.add(removeBtn)
+        return chip
+    }
+
+    private fun pickLocalImages() {
+        val chooser = JFileChooser().apply {
+            isMultiSelectionEnabled = true
+            fileSelectionMode = JFileChooser.FILES_ONLY
+            fileFilter = FileNameExtensionFilter(
+                "Image Files",
+                "png", "jpg", "jpeg", "gif", "webp", "bmp"
+            )
+        }
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return
+        val files = chooser.selectedFiles?.toList().orEmpty()
+        addLocalImages(files)
+    }
+
+    private fun installImageDropSupport() {
+        DropTarget(inputArea, object : DropTargetAdapter() {
+            override fun dragEnter(dtde: DropTargetDragEvent) {
+                if (supportsFileDrop(dtde.currentDataFlavors)) {
+                    dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                    setDropHighlight(true)
+                } else {
+                    dtde.rejectDrag()
+                    setDropHighlight(false)
+                }
+            }
+
+            override fun dragOver(dtde: DropTargetDragEvent) {
+                if (supportsFileDrop(dtde.currentDataFlavors)) {
+                    dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                    setDropHighlight(true)
+                } else {
+                    dtde.rejectDrag()
+                    setDropHighlight(false)
+                }
+            }
+
+            override fun dragExit(dte: DropTargetEvent) {
+                setDropHighlight(false)
+            }
+
+            override fun drop(dtde: DropTargetDropEvent) {
+                setDropHighlight(false)
+                if (!supportsFileDrop(dtde.currentDataFlavors)) {
+                    dtde.rejectDrop()
+                    return
+                }
+                dtde.acceptDrop(DnDConstants.ACTION_COPY)
+                val files = extractDroppedFiles(dtde.transferable, dtde.currentDataFlavors.toList())
+                if (files.isEmpty()) {
+                    dtde.dropComplete(false)
+                    return
+                }
+                addLocalImages(files)
+                dtde.dropComplete(true)
+            }
+        })
+    }
+
+    private fun supportsFileDrop(flavors: Array<DataFlavor>): Boolean {
+        return flavors.any {
+            it == DataFlavor.javaFileListFlavor ||
+                it == DataFlavor.stringFlavor ||
+                it.mimeType.startsWith("text/uri-list")
+        }
+    }
+
+    private fun extractDroppedFiles(transferable: Transferable, flavors: List<DataFlavor>): List<File> {
+        if (transferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+            val files = runCatching {
+                @Suppress("UNCHECKED_CAST")
+                transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<File>
+            }.getOrNull().orEmpty()
+            if (files.isNotEmpty()) return files
+        }
+        for (flavor in flavors) {
+            if (flavor == DataFlavor.stringFlavor || flavor.mimeType.startsWith("text/uri-list")) {
+                val raw = runCatching {
+                    transferable.getTransferData(flavor)?.toString()
+                }.getOrNull().orEmpty()
+                val files = parseUriListToFiles(raw)
+                if (files.isNotEmpty()) return files
+            }
+        }
+        return emptyList()
+    }
+
+    private fun parseUriListToFiles(raw: String): List<File> {
+        return raw
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .mapNotNull { line ->
+                val normalized = line.removePrefix("file://localhost")
+                runCatching { File(URI(normalized)) }.getOrNull()
+            }
+            .toList()
+    }
+
+    private fun setDropHighlight(active: Boolean) {
+        SwingUtilities.invokeLater {
+            inputArea.border = if (active) inputDropBorder else inputNormalBorder
+            inputArea.revalidate()
+            inputArea.repaint()
+        }
+    }
+
+    private fun addLocalImages(files: List<File>) {
+        if (files.isEmpty()) return
+        val added = mutableListOf<String>()
+        val skippedDuplicate = mutableListOf<String>()
+        val skippedInvalid = mutableListOf<String>()
+        val selectedPathKeys = mutableSetOf<String>()
+        files.forEach { file ->
+            if (!file.exists() || !file.isFile) {
+                skippedInvalid.add(file.name)
+                return@forEach
+            }
+            val pathKey = normalizePathKey(file)
+            val duplicated = pathKey in selectedPathKeys || pendingImages.any { it.pathKey == pathKey }
+            if (duplicated) {
+                skippedDuplicate.add(file.name)
+                return@forEach
+            }
+            selectedPathKeys.add(pathKey)
+            runCatching { buildImageBlockFromFile(file) }
+                .onSuccess { block ->
+                    pendingImages.add(PendingImage(file.name, pathKey, block))
+                    added.add(file.name)
+                }
+                .onFailure { e ->
+                    JOptionPane.showMessageDialog(
+                        this,
+                        "Failed to attach ${file.name}: ${e.message}",
+                        "Attach Image Failed",
+                        JOptionPane.ERROR_MESSAGE
+                    )
+                }
+        }
+        refreshAttachmentLabel()
+        if (added.isNotEmpty()) {
+            log.info("Attached local images: ${added.joinToString(", ")}")
+        }
+        if (skippedInvalid.isNotEmpty()) {
+            JOptionPane.showMessageDialog(
+                this,
+                "Skipped invalid files: ${skippedInvalid.joinToString(", ")}",
+                "Invalid Files",
+                JOptionPane.INFORMATION_MESSAGE
+            )
+        }
+        if (skippedDuplicate.isNotEmpty()) {
+            JOptionPane.showMessageDialog(
+                this,
+                "Skipped duplicate images: ${skippedDuplicate.joinToString(", ")}",
+                "Duplicate Images",
+                JOptionPane.INFORMATION_MESSAGE
+            )
+        }
+    }
+
+    private fun normalizePathKey(file: File): String {
+        val raw = runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
+        val isWindows = System.getProperty("os.name").lowercase().contains("win")
+        return if (isWindows) raw.lowercase() else raw
+    }
+
+    private fun buildImageBlockFromFile(file: File): ContentBlock {
+        require(file.exists() && file.isFile) { "File does not exist." }
+        val mimeType = detectImageMime(file.name, Files.probeContentType(file.toPath()))
+        val data = Base64.getEncoder().encodeToString(file.readBytes())
+        return ContentBlock(type = "image", mimeType = mimeType, data = data, uri = file.toURI().toString())
+    }
+
+    private fun detectImageMime(nameOrUrl: String, contentType: String?): String {
+        val ct = contentType?.substringBefore(";")?.trim()?.lowercase()
+        if (ct != null && ct.startsWith("image/")) return ct
+        val lower = nameOrUrl.lowercase()
+        return when {
+            lower.endsWith(".png") -> "image/png"
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+            lower.endsWith(".gif") -> "image/gif"
+            lower.endsWith(".webp") -> "image/webp"
+            lower.endsWith(".bmp") -> "image/bmp"
+            else -> throw IllegalArgumentException("Unsupported or unknown image MIME type.")
+        }
     }
 
     private fun finalizeAgentMessage() {
@@ -475,24 +775,29 @@ body { margin:0; background:$bg; display:flex; align-items:center; justify-conte
             AgentStatus.DISCONNECTED -> {
                 statusLabel.text = "Disconnected"; statusLabel.foreground = JBColor.GRAY
                 sendButton.isEnabled = false; cancelButton.isEnabled = false; inputArea.isEnabled = false
+                uploadImageButton.isEnabled = false
             }
             AgentStatus.CONNECTING -> {
                 statusLabel.text = "Connecting..."; statusLabel.foreground = JBColor.ORANGE
                 sendButton.isEnabled = false; cancelButton.isEnabled = false; inputArea.isEnabled = false
+                uploadImageButton.isEnabled = false
             }
             AgentStatus.CONNECTED -> {
                 statusLabel.text = "Connected"; statusLabel.foreground = JBColor.BLUE
                 sendButton.isEnabled = false; cancelButton.isEnabled = false; inputArea.isEnabled = false
+                uploadImageButton.isEnabled = false
             }
             AgentStatus.READY -> {
                 statusLabel.text = "Ready"; statusLabel.foreground = JBColor(Color(0x2e7d32), Color(0x81c784))
                 sendButton.isEnabled = true; cancelButton.isEnabled = false; inputArea.isEnabled = true
+                uploadImageButton.isEnabled = true
                 inputArea.requestFocusInWindow()
                 renderFullPage()
             }
             AgentStatus.THINKING -> {
                 statusLabel.text = "Thinking..."; statusLabel.foreground = JBColor(Color(0x1565c0), Color(0x64b5f6))
                 sendButton.isEnabled = false; cancelButton.isEnabled = true; inputArea.isEnabled = false
+                uploadImageButton.isEnabled = false
             }
         }
     }

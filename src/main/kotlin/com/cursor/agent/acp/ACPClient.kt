@@ -6,6 +6,8 @@ import com.google.gson.JsonObject
 import com.intellij.openapi.diagnostic.Logger
 import kotlinx.coroutines.*
 import java.io.BufferedReader
+import java.io.File
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.util.concurrent.ConcurrentHashMap
@@ -17,6 +19,12 @@ class ACPClient(
     private val authToken: String? = null,
     private val endpoint: String? = null
 ) {
+    private data class ResolvedAgentCommand(
+        val executable: String,
+        val source: String,
+        val attempts: List<String>
+    )
+
     private val log = Logger.getInstance(ACPClient::class.java)
     private val gson = Gson()
     private val nextId = AtomicInteger(1)
@@ -26,6 +34,7 @@ class ACPClient(
     private var writer: OutputStreamWriter? = null
     private var readerJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var lastStartErrorDetails: String? = null
 
     var onSessionUpdate: ((SessionUpdateContent) -> Unit)? = null
     var onPermissionRequest: ((Int, PermissionRequest) -> Unit)? = null
@@ -39,22 +48,27 @@ class ACPClient(
     var onDisconnected: (() -> Unit)? = null
 
     val isConnected: Boolean get() = process?.isAlive == true
+    fun getLastStartErrorDetails(): String? = lastStartErrorDetails
+    var supportsImagePrompt: Boolean = false
+        private set
 
     fun start(): Boolean {
         try {
-            val command = mutableListOf<String>()
+            lastStartErrorDetails = null
             val isWindows = System.getProperty("os.name").lowercase().contains("win")
-            if (isWindows && (agentPath.endsWith(".cmd") || agentPath.endsWith(".bat") || !agentPath.contains("."))) {
+            val resolved = resolveAgentCommand(agentPath, isWindows)
+            val command = mutableListOf<String>()
+            if (isWindows && (resolved.executable.endsWith(".cmd") || resolved.executable.endsWith(".bat"))) {
                 command.addAll(listOf("cmd", "/c"))
             }
-            command.add(agentPath)
+            command.add(resolved.executable)
             apiKey?.let { command.addAll(listOf("--api-key", it)) }
             authToken?.let { command.addAll(listOf("--auth-token", it)) }
             endpoint?.let { command.addAll(listOf("-e", it)) }
 
             command.add("acp")
 
-            log.info("Starting ACP agent: ${command.joinToString(" ")}")
+            log.info("Starting ACP agent from ${resolved.source}: ${command.joinToString(" ")}")
 
             val pb = ProcessBuilder(command)
             pb.redirectErrorStream(false)
@@ -91,9 +105,88 @@ class ACPClient(
 
             return true
         } catch (e: Exception) {
+            val pathEnv = System.getenv("PATH").orEmpty()
+            val rawConfig = agentPath.ifBlank { "<empty>" }
+            val message = buildString {
+                append("Failed to start ACP agent.")
+                append("\nConfigured agent path: $rawConfig")
+                append("\nOS: ${System.getProperty("os.name")}")
+                append("\nPATH: $pathEnv")
+                append("\nCause: ${e.message ?: e.javaClass.simpleName}")
+            }
+            lastStartErrorDetails = message
             log.error("Failed to start ACP agent", e)
             return false
         }
+    }
+
+    private fun resolveAgentCommand(configuredPath: String, isWindows: Boolean): ResolvedAgentCommand {
+        val attempts = mutableListOf<String>()
+
+        val normalizedConfigured = configuredPath.trim()
+        if (normalizedConfigured.isNotEmpty()) {
+            attempts.add("settings:$normalizedConfigured")
+            resolveDirectPath(normalizedConfigured, isWindows)?.let {
+                return ResolvedAgentCommand(it, "settings", attempts)
+            }
+        }
+
+        val envPath = System.getenv("CURSOR_AGENT_PATH")?.trim().orEmpty()
+        if (envPath.isNotEmpty()) {
+            attempts.add("env:CURSOR_AGENT_PATH=$envPath")
+            resolveDirectPath(envPath, isWindows)?.let {
+                return ResolvedAgentCommand(it, "CURSOR_AGENT_PATH", attempts)
+            }
+        }
+
+        val names = if (isWindows) listOf("agent.exe", "agent.cmd", "agent.bat", "agent") else listOf("agent")
+        names.forEach { name ->
+            attempts.add("path:$name")
+            findInPath(name, isWindows)?.let {
+                return ResolvedAgentCommand(it, "PATH", attempts)
+            }
+        }
+
+        val commonPaths = if (isWindows) {
+            listOf(
+                "C:\\Program Files\\Cursor\\resources\\app\\bin\\agent.exe",
+                "C:\\Users\\${System.getProperty("user.name")}\\AppData\\Local\\Programs\\Cursor\\resources\\app\\bin\\agent.exe"
+            )
+        } else {
+            listOf(
+                "/opt/homebrew/bin/agent",
+                "/usr/local/bin/agent",
+                "/Applications/Cursor.app/Contents/Resources/app/bin/agent"
+            )
+        }
+        commonPaths.forEach { path ->
+            attempts.add("common:$path")
+            resolveDirectPath(path, isWindows)?.let {
+                return ResolvedAgentCommand(it, "commonPath", attempts)
+            }
+        }
+
+        throw IOException("Cannot find Cursor agent binary. Attempts: ${attempts.joinToString(", ")}")
+    }
+
+    private fun resolveDirectPath(path: String, isWindows: Boolean): String? {
+        val file = File(path)
+        if (file.isFile && (isWindows || file.canExecute())) {
+            return file.absolutePath
+        }
+        return null
+    }
+
+    private fun findInPath(name: String, isWindows: Boolean): String? {
+        val pathEnv = System.getenv("PATH") ?: return null
+        val dirs = pathEnv.split(File.pathSeparator).filter { it.isNotBlank() }
+        for (dir in dirs) {
+            val candidate = File(dir, name)
+            if (candidate.isFile && (isWindows || candidate.canExecute())) {
+                return candidate.absolutePath
+            }
+        }
+        return null
     }
 
     fun stop() {
@@ -262,7 +355,11 @@ class ACPClient(
         try {
             val caps = result?.asJsonObject?.getAsJsonObject("agentCapabilities")
             supportsLoadSession = caps?.get("loadSession")?.asBoolean == true
-            log.info("initialize result capabilities: loadSession=$supportsLoadSession, raw=${result?.toString()?.take(500)}")
+            supportsImagePrompt = caps
+                ?.getAsJsonObject("promptCapabilities")
+                ?.get("image")
+                ?.asBoolean == true
+            log.info("initialize result capabilities: loadSession=$supportsLoadSession, imagePrompt=$supportsImagePrompt, raw=${result?.toString()?.take(500)}")
         } catch (e: Exception) {
             log.warn("Failed to parse initialize capabilities: ${e.message}")
         }
@@ -286,11 +383,8 @@ class ACPClient(
         return gson.fromJson(result, NewSessionResult::class.java)
     }
 
-    suspend fun prompt(sessionId: String, text: String): PromptResult? {
-        val params = PromptParams(
-            sessionId = sessionId,
-            prompt = listOf(ContentBlock(text = text))
-        )
+    suspend fun prompt(sessionId: String, prompt: List<ContentBlock>): PromptResult? {
+        val params = PromptParams(sessionId = sessionId, prompt = prompt)
         val result = sendRequest("session/prompt", params)
         return result?.let { gson.fromJson(it, PromptResult::class.java) }
     }

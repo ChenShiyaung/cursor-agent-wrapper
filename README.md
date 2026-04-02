@@ -11,6 +11,8 @@
 - **流式输出** — 实时显示 Agent 的思考过程（紫色折叠区块）和生成内容
 - **模型切换** — 通过 `session/set_config_option` 在会话内无缝切换 AI 模型（Claude、GPT、Gemini 等 26+ 个 ACP 模型），无需断开重连
 - **Tab 重命名** — 双击 Tab 标题直接编辑会话名称，自动同步到本地数据库
+- **本地图片上传** — 支持选择本地图片或拖拽图片到输入框，作为 ACP `image` content block 发送
+- **附件管理** — 支持多图附件展示、单个附件删除、同一路径图片去重
 
 ### Agent 能力
 - **文件读写** — Agent 可以直接读取和修改项目中的文件（`fs.readTextFile` / `fs.writeTextFile`）
@@ -47,6 +49,7 @@
    或在插件设置中配置 API Key / Auth Token
 
 3. **DevEco Studio / IntelliJ IDEA** — 版本 2024.3（build 243）或更高
+4. **JDK** — 支持 JDK 17 / 21（构建时自动优先使用 21，没有则回落 17）
 
 ## 构建
 
@@ -59,8 +62,9 @@
 ```
 
 构建产物位于 `build/distributions/` 目录。
-
-> **注意**：`build.gradle.kts` 中 `intellijPlatform.local()` 指向本地 DevEco Studio 路径，请根据你的环境修改。
+构建行为说明：
+- 可通过环境变量覆盖工具链版本：`JDK_TOOLCHAIN_VERSION=17` 或 `JDK_TOOLCHAIN_VERSION=21`
+- IDE 平台优先读取 `DEVECO_STUDIO_HOME` / `IDEA_HOME`，未配置时回退到 `intellijIdeaCommunity("2024.3.5")`
 
 ## 安装
 
@@ -82,6 +86,8 @@
 | Auto-connect | 打开项目时自动连接 Agent | true |
 | Auto-approve permissions | 自动批准所有工具调用（不推荐） | false |
 
+> 插件会按以下优先级解析 Agent 可执行文件：设置中的 `Agent binary path` → `CURSOR_AGENT_PATH` 环境变量 → 系统 PATH（`agent` / `agent.exe`）→ 常见安装路径（macOS / Windows）。
+
 ## 使用
 
 1. 在 IDE 右侧找到 **Cursor Agent** Tool Window
@@ -94,6 +100,8 @@
 8. 双击 Tab 标题可重命名会话
 9. 点击 Tab 上的 × 关闭会话并释放连接
 10. 滚轮滚动可横向浏览 Tab 栏
+11. 点击 **Upload Image** 选择本地图片，或将图片直接拖拽到输入框
+12. 已添加的图片会显示在输入框下方，可点击每张图片右侧 `×` 删除
 
 ## 架构
 
@@ -143,7 +151,6 @@ User Input → ChatSessionTab → AgentConnection → ACPClient → agent acp (s
 
 ## TODO
 
-- [ ] 图片上传 — 支持在对话中上传图片，实现多模态交互
 - [ ] Token 用量 — 显示每次对话的 token 用量和费用估算
 - [ ] 会话导出 — 将对话内容导出为 Markdown 文件
 - [ ] Tab 拖拽排序

@@ -52,6 +52,8 @@ class AgentConnection(
         sessionId == null -> AgentStatus.CONNECTED
         else -> AgentStatus.READY
     }
+    val supportsImagePrompt: Boolean
+        get() = acpClient?.supportsImagePrompt == true
 
     fun connect() {
         scope.launch {
@@ -70,7 +72,11 @@ class AgentConnection(
                 setupClientHandlers(client)
 
                 if (!client.start()) {
-                    notifyError("Failed to start Cursor Agent process.")
+                    val details = client.getLastStartErrorDetails()
+                    notifyError(
+                        if (details.isNullOrBlank()) "Failed to start Cursor Agent process."
+                        else details
+                    )
                     onStatusChanged?.invoke(AgentStatus.DISCONNECTED)
                     return@launch
                 }
@@ -204,7 +210,7 @@ class AgentConnection(
         scope.cancel()
     }
 
-    fun sendPrompt(text: String) {
+    fun sendPrompt(text: String, images: List<ContentBlock> = emptyList()) {
         val sid = sessionId ?: run {
             notifyError("No active session.")
             return
@@ -214,7 +220,14 @@ class AgentConnection(
         scope.launch {
             try {
                 onStatusChanged?.invoke(AgentStatus.THINKING)
-                val result = client.prompt(sid, text)
+                val promptBlocks = mutableListOf<ContentBlock>()
+                if (text.isNotBlank()) promptBlocks.add(ContentBlock(type = "text", text = text))
+                promptBlocks.addAll(images)
+                if (promptBlocks.isEmpty()) {
+                    onStatusChanged?.invoke(AgentStatus.READY)
+                    return@launch
+                }
+                val result = client.prompt(sid, promptBlocks)
                 resolveWorkspaceHash(sid)
                 onPromptFinished?.invoke(result?.stopReason ?: "unknown")
                 onStatusChanged?.invoke(AgentStatus.READY)

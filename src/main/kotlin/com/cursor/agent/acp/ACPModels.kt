@@ -102,7 +102,10 @@ data class PromptParams(
 
 data class ContentBlock(
     val type: String = "text",
-    val text: String? = null
+    val text: String? = null,
+    val mimeType: String? = null,
+    val data: String? = null,
+    val uri: String? = null
 )
 
 data class PromptResult(

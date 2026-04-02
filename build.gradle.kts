@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "1.9.25"
@@ -6,6 +8,18 @@ plugins {
 
 group = "com.cursor.agent"
 version = "1.0.0"
+
+val toolchainVersion =
+    System.getenv("JDK_TOOLCHAIN_VERSION")?.toIntOrNull()
+        ?: run {
+            val current = JavaVersion.current().majorVersion.toIntOrNull() ?: 17
+            if (current >= 21) 21 else 17
+        }
+
+val localIdePath =
+    listOf("DEVECO_STUDIO_HOME", "IDEA_HOME")
+        .mapNotNull { key -> System.getenv(key) }
+        .firstOrNull { path -> File(path).exists() }
 
 repositories {
     maven { url = uri("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/") }
@@ -18,7 +32,13 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        local("C:/Program Files/Huawei/DevEco Studio 6")
+        // Prefer a locally installed IDE for realistic plugin debugging.
+        if (localIdePath != null) {
+            local(localIdePath)
+        } else {
+            // Fallback so project can build/run on any machine out of the box.
+            intellijIdeaCommunity("2024.3.5")
+        }
     }
 
     implementation("com.google.code.gson:gson:2.11.0")
@@ -27,7 +47,21 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(toolchainVersion)
+    compilerOptions {
+        // Keep bytecode at Java 17 so the plugin can run on both JDK 17/21 based IDE runtimes.
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(toolchainVersion))
+    }
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(17)
 }
 
 tasks {
