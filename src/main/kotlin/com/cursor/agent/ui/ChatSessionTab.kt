@@ -3,6 +3,7 @@ package com.cursor.agent.ui
 import com.cursor.agent.acp.ConfigOptionValue
 import com.cursor.agent.acp.ToolCallInfo
 import com.cursor.agent.services.*
+import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
@@ -123,6 +124,7 @@ class ChatSessionTab(
         add(composerPanel, BorderLayout.SOUTH)
 
         setupCallbacks()
+        installThemeListener()
         updateStatus(AgentStatus.DISCONNECTED)
 
         if (chatId != null) {
@@ -133,6 +135,22 @@ class ChatSessionTab(
         }
 
         connection.connect()
+    }
+
+    private fun installThemeListener() {
+        ApplicationManager.getApplication().messageBus.connect(this)
+            .subscribe(LafManagerListener.TOPIC, LafManagerListener {
+                SwingUtilities.invokeLater { applyThemeColors() }
+            })
+    }
+
+    private fun applyThemeColors() {
+        val dark = htmlBuilder.isDark()
+        modelLabel.foreground = if (dark) Color(0x6c, 0xb6, 0xff) else Color(0x15, 0x65, 0xc0)
+        cachedModelPopup = null
+        revalidate()
+        repaint()
+        renderFullPage()
     }
 
     private fun loadFromDb(chatId: String) {
@@ -277,13 +295,45 @@ class ChatSessionTab(
 
     private fun finalizeAgentMessage() {
         if (toolCallOrder.isNotEmpty()) {
-            val summary = ChatHtmlBuilder.buildToolCallSummary(toolCallOrder, toolCallElements)
-            if (summary.isNotBlank()) chatHistory.add(ChatEntry("tool_call", summary))
+            val lastInfo = toolCallElements[toolCallOrder.last()]
+            if (lastInfo != null) {
+                chatHistory.add(ChatEntry("tool_call", formatToolCallSummary(lastInfo, toolCallOrder.size)))
+            } else {
+                chatHistory.add(ChatEntry("tool_call", "${toolCallOrder.size} tool calls"))
+            }
         }
         if (currentThought.isNotEmpty()) chatHistory.add(ChatEntry("thought", currentThought.toString()))
         if (currentAgentMessage.isNotEmpty()) chatHistory.add(ChatEntry("assistant", currentAgentMessage.toString()))
         currentAgentMessage.clear(); currentThought.clear(); isThinking = false
         toolCallElements.clear(); toolCallOrder.clear()
+    }
+
+    private fun formatToolCallSummary(info: ToolCallInfo, totalCalls: Int): String {
+        val title = info.title ?: info.kind ?: "tool"
+        val status = info.status ?: "pending"
+        val input = info.input
+        if (input == null) {
+            val count = if (totalCalls > 1) " · $totalCalls calls" else ""
+            return "$title [$status]$count"
+        }
+        return try {
+            val obj = input.asJsonObject
+            val path = obj.get("path")?.asString?.takeIf { it.isNotBlank() }
+            val command = obj.get("command")?.asString?.takeIf { it.isNotBlank() }
+            val pattern = obj.get("pattern")?.asString?.takeIf { it.isNotBlank() }
+            val detail = when {
+                path != null -> "path=${path.take(80)}"
+                command != null -> "command=${command.take(80)}"
+                pattern != null -> "pattern=${pattern.take(80)}"
+                else -> null
+            }
+            val count = if (totalCalls > 1) " · $totalCalls calls" else ""
+            val base = if (detail == null) "$title [$status]$count" else "$title · $detail [$status]$count"
+            base.replace(Regex("\\s+"), " ").trim()
+        } catch (_: Exception) {
+            val count = if (totalCalls > 1) " · $totalCalls calls" else ""
+            "$title [$status]$count"
+        }
     }
 
     private var isStreaming = false

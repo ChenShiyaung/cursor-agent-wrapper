@@ -19,10 +19,11 @@
 - **操作取消** — 支持随时取消正在执行的 Agent 操作
 
 ### 渲染与 UI
-- **JCEF 富文本渲染** — 使用内嵌 Chromium 渲染 Markdown，支持 GFM 表格、列表、内联代码等（JTextPane 纯文本作为降级方案）
-- **代码块增强** — highlight.js 语法高亮、一键复制按钮、文件路径点击跳转到 IDE 编辑器
+- **Swing 原生渲染** — 默认使用 `JPanel + JEditorPane + EditorTextField` 渲染聊天内容，无需 JCEF 即可显示 Markdown 与代码块
+- **代码块增强** — 代码块头部显示语言/文件路径、支持一键复制、点击路径跳转 IDE，并支持横向滚动查看长行
 - **ETS / ArkTS 支持** — 代码块中 `ets`、`arkts` 语言标记自动映射为 TypeScript 高亮
-- **主题适配** — 自动跟随 IDE 深色/浅色主题，包括滚动条、图标、代码高亮配色
+- **主题适配** — 自动跟随 IDE 深色/浅色主题，动态更新气泡、Tab、代码块配色
+- **Tool 流式摘要** — Tool 调用在流式阶段以单行状态展示并实时更新，减少噪声
 
 ### 会话管理
 - **会话持久化** — 重启 IDE 自动恢复上一次打开的 Tab 及历史内容
@@ -60,7 +61,7 @@
 
 构建产物位于 `build/distributions/` 目录。
 
-> **注意**：`build.gradle.kts` 中 `intellijPlatform.local()` 指向本地 DevEco Studio 路径，请根据你的环境修改。
+> **注意**：构建脚本优先读取 `DEVECO_STUDIO_HOME` / `IDEA_HOME` 作为本地 IDE 路径；未配置时自动回退到 `intellijIdeaCommunity("2024.3.5")`。
 
 ## 安装
 
@@ -114,8 +115,9 @@ src/main/kotlin/com/cursor/agent/
     ├── AgentChatPanel.kt             # 自定义 Tab 栏 + CardLayout 内容切换 + 历史面板
     ├── AgentToolWindowFactory.kt     # Tool Window 注册工厂
     ├── ChatSessionTab.kt             # 单个聊天 Tab（输入、渲染、模型选择、权限弹窗）
-    ├── ChatHtmlBuilder.kt            # HTML/CSS 生成 + highlight.js + 主题适配
-    ├── ChatRenderer.kt               # JCEF 渲染器（含文件路径跳转）/ JTextPane 降级
+    ├── SwingChatRenderer.kt          # 原生 Swing 渲染器（Markdown、代码块、主题、滚动）
+    ├── ChatHtmlBuilder.kt            # 颜色/工具摘要等渲染辅助工具
+    ├── ChatRenderer.kt               # 旧 JCEF 渲染抽象（兼容保留）
     ├── SessionHistoryPanel.kt        # 会话历史列表面板（含删除回调）
     └── MessageRenderer.kt            # Markdown → HTML 转换（IntelliJ GFM Parser）
 ```
@@ -125,8 +127,8 @@ src/main/kotlin/com/cursor/agent/
 ```
 User Input → ChatSessionTab → AgentConnection → ACPClient → agent acp (stdio)
                   ↕                  ↕               ↕
-             ChatRenderer      session/load      JSON-RPC 2.0
-             (JCEF HTML)       session/new       (newline-delimited)
+           SwingChatRenderer   session/load      JSON-RPC 2.0
+             (Native UI)       session/new       (newline-delimited)
                                session/prompt
                                set_config_option
 ```

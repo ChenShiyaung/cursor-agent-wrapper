@@ -2,7 +2,6 @@ package com.cursor.agent.ui
 
 import com.cursor.agent.acp.ToolCallInfo
 import com.intellij.openapi.editor.colors.EditorColorsManager
-import com.intellij.ui.JBColor
 import com.intellij.util.ui.UIUtil
 import java.awt.Color
 
@@ -10,7 +9,7 @@ data class ChatEntry(val role: String, val text: String)
 
 class ChatHtmlBuilder {
 
-    fun isDark(): Boolean = !JBColor.isBright()
+    fun isDark(): Boolean = isDarkColor(UIUtil.getPanelBackground())
 
     fun fontSize(): Int {
         return try {
@@ -190,6 +189,11 @@ img { max-width: 100%; }
     }
 
     companion object {
+        fun isDarkColor(c: Color): Boolean {
+            val luminance = (0.2126 * c.red + 0.7152 * c.green + 0.0722 * c.blue) / 255.0
+            return luminance < 0.5
+        }
+
         fun colorHex(c: Color): String = String.format("#%02x%02x%02x", c.red, c.green, c.blue)
         fun extractToolCallDetail(info: ToolCallInfo, basePath: String?): String {
             val input = info.input ?: return ""

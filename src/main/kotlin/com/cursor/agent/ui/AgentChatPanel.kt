@@ -2,6 +2,7 @@ package com.cursor.agent.ui
 
 import com.cursor.agent.services.ChatHistoryService
 import com.cursor.agent.settings.AgentSettings
+import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
@@ -26,12 +27,16 @@ class AgentChatPanel(
     private var selectedTab: ChatSessionTab? = null
 
     private val contentCards = CardLayout()
-    private val contentPanel = JPanel(contentCards)
+    private val contentPanel = JPanel(contentCards).apply {
+        isOpaque = true
+        background = UIUtil.getPanelBackground()
+    }
 
     private val tabBarPanel = object : JPanel() {
         init {
             layout = BoxLayout(this, BoxLayout.X_AXIS)
-            isOpaque = false
+            isOpaque = true
+            background = UIUtil.getPanelBackground()
         }
         override fun getPreferredSize(): Dimension {
             var w = 0
@@ -47,22 +52,38 @@ class AgentChatPanel(
     }
     private val tabBarScroll = JBScrollPane(tabBarPanel,
         JScrollPane.VERTICAL_SCROLLBAR_NEVER,
-        JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+        JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED
     ).apply {
         border = JBUI.Borders.customLine(UIUtil.getSeparatorColor(), 0, 0, 1, 0)
-        isOpaque = false
-        viewport.isOpaque = false
-        addMouseWheelListener { e ->
+        isOpaque = true
+        background = UIUtil.getPanelBackground()
+        viewport.isOpaque = true
+        viewport.background = UIUtil.getPanelBackground()
+        horizontalScrollBar.unitIncrement = JBUI.scale(24)
+        horizontalScrollBar.preferredSize = Dimension(0, JBUI.scale(7))
+        horizontalScrollBar.minimumSize = Dimension(0, JBUI.scale(7))
+        horizontalScrollBar.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(7))
+        val wheelScroll: (java.awt.event.MouseWheelEvent) -> Unit = wheel@{ e ->
             val hBar = horizontalScrollBar
-            hBar.value = hBar.value + e.unitsToScroll * hBar.unitIncrement
+            if (hBar.maximum <= hBar.visibleAmount) return@wheel
+            val delta = (e.preciseWheelRotation * hBar.unitIncrement).toInt()
+            hBar.value = (hBar.value + delta).coerceIn(0, hBar.maximum - hBar.visibleAmount)
+            e.consume()
         }
+        addMouseWheelListener { e -> wheelScroll(e) }
+        viewport.addMouseWheelListener { e -> wheelScroll(e) }
     }
 
     private val outerCards = CardLayout()
-    private val outerPanel = JPanel(outerCards)
+    private val outerPanel = JPanel(outerCards).apply {
+        isOpaque = true
+        background = UIUtil.getPanelBackground()
+    }
     private val historyPanel: SessionHistoryPanel
 
     private val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2)).apply {
+        isOpaque = true
+        background = UIUtil.getPanelBackground()
         border = JBUI.Borders.empty(2, 4)
     }
 
@@ -77,11 +98,15 @@ class AgentChatPanel(
         toolbar.add(newChatButton)
 
         val topPanel = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = UIUtil.getPanelBackground()
             add(toolbar, BorderLayout.NORTH)
             add(tabBarScroll, BorderLayout.CENTER)
         }
 
         val chatArea = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = UIUtil.getPanelBackground()
             add(topPanel, BorderLayout.NORTH)
             add(contentPanel, BorderLayout.CENTER)
         }
@@ -98,6 +123,8 @@ class AgentChatPanel(
         add(outerPanel, BorderLayout.CENTER)
 
         Disposer.register(parentDisposable, this)
+        installThemeListener()
+        applyThemeColors()
 
         restoreOrNewChat()
     }
@@ -161,6 +188,7 @@ class AgentChatPanel(
         tabBarPanel.repaint()
 
         selectTab(tab)
+        SwingUtilities.invokeLater { ensureTabVisible(tab) }
         saveOpenTabs()
     }
 
@@ -170,6 +198,7 @@ class AgentChatPanel(
         val cardKey = System.identityHashCode(tab).toString()
         contentCards.show(contentPanel, cardKey)
         refreshTabBarSelection()
+        SwingUtilities.invokeLater { ensureTabVisible(tab) }
         saveOpenTabs()
     }
 
@@ -209,6 +238,23 @@ class AgentChatPanel(
             if (comp is TabButton) {
                 comp.setActive(comp.tab === selectedTab)
             }
+        }
+    }
+
+    private fun ensureTabVisible(tab: ChatSessionTab) {
+        val button = findTabButton(tab) ?: return
+        val viewport = tabBarScroll.viewport ?: return
+        val bounds = button.bounds
+        val pos = viewport.viewPosition
+        val width = viewport.extentSize.width
+        var targetX = pos.x
+        if (bounds.x < pos.x) {
+            targetX = bounds.x
+        } else if (bounds.x + bounds.width > pos.x + width) {
+            targetX = bounds.x + bounds.width - width
+        }
+        if (targetX != pos.x) {
+            viewport.viewPosition = Point(maxOf(0, targetX), pos.y)
         }
     }
 
@@ -268,6 +314,25 @@ class AgentChatPanel(
         return md5.digest(path.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 
+    private fun installThemeListener() {
+        ApplicationManager.getApplication().messageBus.connect(this)
+            .subscribe(LafManagerListener.TOPIC, LafManagerListener {
+                SwingUtilities.invokeLater { applyThemeColors() }
+            })
+    }
+
+    private fun applyThemeColors() {
+        val bg = UIUtil.getPanelBackground()
+        contentPanel.background = bg
+        tabBarPanel.background = bg
+        tabBarScroll.background = bg
+        tabBarScroll.viewport.background = bg
+        outerPanel.background = bg
+        toolbar.background = bg
+        revalidate()
+        repaint()
+    }
+
     override fun dispose() {}
 
     // ─── Custom Tab Button ──────────────────────────────────────────
@@ -282,11 +347,15 @@ class AgentChatPanel(
         private var activeEditor: JTextField? = null
         private var globalClickListener: java.awt.event.AWTEventListener? = null
 
-        private val dark = !com.intellij.ui.JBColor.isBright()
-        private val activeBg = if (dark) Color(0x3C, 0x3F, 0x41) else Color(0xFF, 0xFF, 0xFF)
-        private val inactiveBg = if (dark) Color(0x2B, 0x2B, 0x2B) else Color(0xEC, 0xEC, 0xEC)
-        private val hoverBg = if (dark) Color(0x35, 0x38, 0x3A) else Color(0xF5, 0xF5, 0xF5)
-        private val activeBottomBar = if (dark) Color(0x4A, 0x88, 0xDA) else Color(0x40, 0x78, 0xC0)
+        private fun isDarkTheme(): Boolean =
+            ChatHtmlBuilder.isDarkColor(UIUtil.getPanelBackground())
+        private fun activeBg(): Color = if (isDarkTheme()) Color(0x3C, 0x3F, 0x41) else Color(0xFF, 0xFF, 0xFF)
+        private fun inactiveBg(): Color = if (isDarkTheme()) Color(0x2B, 0x2B, 0x2B) else Color(0xEC, 0xEC, 0xEC)
+        private fun hoverBg(): Color = if (isDarkTheme()) Color(0x35, 0x38, 0x3A) else Color(0xF5, 0xF5, 0xF5)
+        private fun activeBottomBar(): Color = if (isDarkTheme()) Color(0x4A, 0x88, 0xDA) else Color(0x40, 0x78, 0xC0)
+        private fun closeBtnNormalColor(): Color = if (isDarkTheme()) Color(0x88, 0x88, 0x88) else Color(0x99, 0x99, 0x99)
+        private fun closeBtnHoverColor(): Color = if (isDarkTheme()) Color(0xff, 0x66, 0x66) else Color(0xcc, 0x33, 0x33)
+        private fun closeBtnHoverBg(): Color = if (isDarkTheme()) Color(0x55, 0x55, 0x55) else Color(0xd8, 0xd8, 0xd8)
 
         private val titleLabel = JBLabel(titleText).apply {
             font = UIUtil.getLabelFont()
@@ -295,16 +364,12 @@ class AgentChatPanel(
             border = JBUI.Borders.empty(0, 2)
         }
 
-        private val closeBtnNormalColor = if (dark) Color(0x88, 0x88, 0x88) else Color(0x99, 0x99, 0x99)
-        private val closeBtnHoverColor = if (dark) Color(0xff, 0x66, 0x66) else Color(0xcc, 0x33, 0x33)
-        private val closeBtnHoverBg = if (dark) Color(0x55, 0x55, 0x55) else Color(0xd8, 0xd8, 0xd8)
-
         private val closeBtn = object : JBLabel("\u00d7") {
             private var isHover = false
 
             init {
                 font = UIUtil.getLabelFont().deriveFont(Font.BOLD, 14f)
-                foreground = closeBtnNormalColor
+                foreground = closeBtnNormalColor()
                 cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 border = JBUI.Borders.empty(2, 4, 2, 4)
                 toolTipText = "Close"
@@ -318,10 +383,10 @@ class AgentChatPanel(
                     }
                     override fun mouseEntered(e: java.awt.event.MouseEvent) {
                         if (editing) return
-                        isHover = true; foreground = closeBtnHoverColor; repaint()
+                        isHover = true; foreground = closeBtnHoverColor(); repaint()
                     }
                     override fun mouseExited(e: java.awt.event.MouseEvent) {
-                        isHover = false; foreground = closeBtnNormalColor; repaint()
+                        isHover = false; foreground = closeBtnNormalColor(); repaint()
                     }
                 })
             }
@@ -330,7 +395,7 @@ class AgentChatPanel(
                 if (isHover && !editing) {
                     val g2 = g.create() as Graphics2D
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                    g2.color = closeBtnHoverBg
+                    g2.color = closeBtnHoverBg()
                     g2.fillRoundRect(0, 0, width, height, 6, 6)
                     g2.dispose()
                 }
@@ -389,13 +454,13 @@ class AgentChatPanel(
             val g2 = g.create() as Graphics2D
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
             g2.color = when {
-                active -> activeBg
-                isHover -> hoverBg
-                else -> inactiveBg
+                active -> activeBg()
+                isHover -> hoverBg()
+                else -> inactiveBg()
             }
             g2.fillRect(0, 0, width, height)
             if (active) {
-                g2.color = activeBottomBar
+                g2.color = activeBottomBar()
                 g2.fillRect(0, height - 2, width, 2)
             }
             g2.dispose()

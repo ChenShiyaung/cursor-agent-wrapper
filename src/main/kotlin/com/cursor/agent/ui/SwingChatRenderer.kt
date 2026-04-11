@@ -24,6 +24,7 @@ import java.awt.*
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import kotlin.math.roundToInt
 import javax.swing.*
 import javax.swing.event.HyperlinkEvent
 import javax.swing.text.html.StyleSheet
@@ -63,6 +64,27 @@ class SwingChatRenderer(
         border = JBUI.Borders.empty()
         verticalScrollBar.unitIncrement = 16
     }
+    private val bottomGlue = Box.createVerticalGlue()
+    private data class ThemePalette(
+        val panelBg: Color,
+        val textPrimary: Color,
+        val textMuted: Color,
+        val link: Color,
+        val userBubble: Color,
+        val agentBubble: Color,
+        val thoughtBg: Color,
+        val thoughtText: Color,
+        val thoughtAccent: Color,
+        val toolBg: Color,
+        val toolText: Color,
+        val toolAccent: Color,
+        val codeBg: Color,
+        val codeBorder: Color,
+        val codeHeaderBg: Color,
+        val codeHeaderText: Color,
+        val inlineCodeBg: Color,
+        val inlineCodeText: Color
+    )
 
     init {
         Disposer.register(parentDisposable, this)
@@ -81,6 +103,7 @@ class SwingChatRenderer(
         currentAgentMessage: CharSequence,
         projectBasePath: String?
     ) {
+        refreshSurfaceColors()
         messagesPanel.removeAll()
 
         if (hasWelcome && chatHistory.isEmpty()) {
@@ -93,7 +116,7 @@ class SwingChatRenderer(
             val panel = when (entry.role) {
                 "user" -> createUserBubble(entry.text)
                 "assistant" -> createAgentBubble(entry.text)
-                "thought" -> createThoughtPanel(entry.text, "Thought")
+                "thought" -> createThoughtPanel(summarizeThoughtText(entry.text), "Thought")
                 "tool_call" -> createToolCallPanel(entry.text)
                 "system" -> createSystemPanel(entry.text)
                 else -> null
@@ -113,9 +136,17 @@ class SwingChatRenderer(
         toolCallElements: Map<String, ToolCallInfo>,
         projectBasePath: String?
     ) {
+        refreshSurfaceColors()
         removeStreamingComponents()
         addStreamingComponents(toolCallOrder, toolCallElements, currentThought, isThinking, currentAgentMessage, projectBasePath)
         finishLayout()
+    }
+
+    private fun refreshSurfaceColors() {
+        val bg = palette().panelBg
+        messagesPanel.background = bg
+        scrollPane.background = bg
+        scrollPane.viewport.background = bg
     }
 
     private fun addStreamingComponents(
@@ -131,19 +162,18 @@ class SwingChatRenderer(
             if (lastInfo != null) {
                 val icon = when (lastInfo.status) { "in_progress" -> "\u25b6"; "completed" -> "\u2713"; "error" -> "\u2717"; else -> "\u25cf" }
                 val title = lastInfo.title ?: lastInfo.kind ?: "tool call"
-                val detail = ChatHtmlBuilder.extractToolCallDetail(lastInfo, projectBasePath)
+                val detail = singleLine(ChatHtmlBuilder.extractToolCallDetail(lastInfo, projectBasePath), 72)
                 val detailStr = if (detail.isNotEmpty()) " $detail" else ""
                 val countStr = if (toolCallOrder.size > 1) " (${toolCallOrder.size} calls)" else ""
-                val p = createToolCallPanel("$icon $title$detailStr [${lastInfo.status ?: "pending"}]$countStr")
+                val toolLine = singleLine("$icon $title$detailStr [${lastInfo.status ?: "pending"}]$countStr", 110)
+                val p = createToolCallPanel(toolLine)
                 p.putClientProperty("streaming", true)
                 messagesPanel.add(p)
             }
         }
         if (currentThought.isNotEmpty()) {
             val label = if (isThinking) "\u25cf Thinking..." else "Thought"
-            val lines = currentThought.toString().trimEnd().lines()
-            val display = if (lines.size <= 1) lines.firstOrNull() ?: "" else "... ${lines.last()}"
-            val p = createThoughtPanel(display, label)
+            val p = createThoughtPanel(summarizeThoughtText(currentThought.toString()), label)
             p.putClientProperty("streaming", true)
             messagesPanel.add(p)
         }
@@ -162,7 +192,10 @@ class SwingChatRenderer(
     }
 
     private fun finishLayout() {
-        messagesPanel.add(Box.createVerticalGlue())
+        if (bottomGlue.parent === messagesPanel) {
+            messagesPanel.remove(bottomGlue)
+        }
+        messagesPanel.add(bottomGlue)
         messagesPanel.revalidate()
         messagesPanel.repaint()
         SwingUtilities.invokeLater {
@@ -186,16 +219,16 @@ class SwingChatRenderer(
     }
 
     private fun createUserBubble(text: String): JPanel {
-        val dark = isDark()
-        val bg = if (dark) Color(0x2b, 0x3d, 0x50) else Color(0xe3, 0xf2, 0xfd)
-        val nameColor = if (dark) Color(0x6c, 0xb6, 0xff) else Color(0x15, 0x65, 0xc0)
+        val p = palette()
+        val bg = p.userBubble
+        val nameColor = p.link
         return createBubble("You", nameColor, bg, text, hasCodeBlocks = false)
     }
 
     private fun createAgentBubble(text: String): JPanel {
-        val dark = isDark()
-        val bg = if (dark) Color(0x2d, 0x2d, 0x2d) else Color(0xf5, 0xf5, 0xf5)
-        val nameColor = if (dark) Color(0x81, 0xc7, 0x84) else Color(0x2e, 0x7d, 0x32)
+        val p = palette()
+        val bg = p.agentBubble
+        val nameColor = if (isDark()) Color(0x8d, 0xcf, 0x93) else Color(0x2e, 0x7d, 0x32)
         return createBubble("Agent", nameColor, bg, text, hasCodeBlocks = true)
     }
 
@@ -233,18 +266,16 @@ class SwingChatRenderer(
     }
 
     private fun createThoughtPanel(text: String, label: String): JPanel {
-        val dark = isDark()
+        val p = palette()
         val panel = JPanel(BorderLayout()).apply {
-            background = if (dark) Color(0x1a, 0x1a, 0x2e) else Color(0xf9, 0xf5, 0xff)
+            background = p.thoughtBg
             border = BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 3, 0, 0,
-                    if (dark) Color(0x7c, 0x3a, 0xed) else Color(0xa7, 0x8b, 0xfa)),
+                BorderFactory.createMatteBorder(0, 3, 0, 0, p.thoughtAccent),
                 JBUI.Borders.empty(6, 10)
             )
         }
-        val color = if (dark) Color(0xc4, 0xb5, 0xfd) else Color(0x6d, 0x28, 0xd9)
         val htmlLabel = JBLabel("<html><b>$label</b><br/>${MessageRenderer.escapeHtml(text)}</html>").apply {
-            foreground = color
+            foreground = p.thoughtText
             font = font.deriveFont(font.size2D - 1f)
         }
         panel.add(htmlLabel, BorderLayout.CENTER)
@@ -252,17 +283,20 @@ class SwingChatRenderer(
     }
 
     private fun createToolCallPanel(text: String): JPanel {
-        val dark = isDark()
+        val p = palette()
+        val oneLine = singleLine(text, 110)
         val panel = JPanel(BorderLayout()).apply {
-            background = if (dark) Color(0x1a, 0x26, 0x36) else Color(0xf0, 0xf4, 0xff)
+            background = p.toolBg
             border = BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 3, 0, 0, Color(0x4a, 0x7f, 0xff)),
+                BorderFactory.createMatteBorder(0, 3, 0, 0, p.toolAccent),
                 JBUI.Borders.empty(4, 8)
             )
+            toolTipText = text
         }
-        val label = JBLabel(text).apply {
-            foreground = if (dark) Color(0x4a, 0x7f, 0xff) else Color(0x29, 0x62, 0xff)
+        val label = JBLabel(oneLine).apply {
+            foreground = p.toolText
             font = font.deriveFont(font.size2D - 1f)
+            toolTipText = text
         }
         panel.add(label, BorderLayout.CENTER)
         return wrapMargin(panel, 2, 2)
@@ -286,13 +320,16 @@ class SwingChatRenderer(
 
     private fun createMarkdownPane(html: String, bgColor: Color): JEditorPane {
         val dark = isDark()
+        val p = palette()
         val fs = UIUtil.getLabelFont().size
-        val fg = if (dark) "#ccc" else "#333"
-        val linkC = if (dark) "#6cb6ff" else "#1565c0"
-        val inlineBg = if (dark) "#3d2a1a" else "#fff5eb"
-        val inlineFg = if (dark) "#ffb86c" else "#e06c00"
-        val borderC = if (dark) "#444" else "#ddd"
-        val thBg = if (dark) "#333" else "#f0f0f0"
+        val fg = ChatHtmlBuilder.colorHex(p.textPrimary)
+        val linkC = ChatHtmlBuilder.colorHex(p.link)
+        val inlineBg = ChatHtmlBuilder.colorHex(p.inlineCodeBg)
+        val inlineFg = ChatHtmlBuilder.colorHex(p.inlineCodeText)
+        val borderC = ChatHtmlBuilder.colorHex(p.codeBorder)
+        val thBg = ChatHtmlBuilder.colorHex(if (dark) p.codeHeaderBg else p.codeBg)
+        val preBg = ChatHtmlBuilder.colorHex(p.codeBg)
+        val quoteFg = ChatHtmlBuilder.colorHex(p.textMuted)
 
         val kit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
         val ss = StyleSheet()
@@ -305,8 +342,8 @@ class SwingChatRenderer(
         ss.addRule("h5, h6 { font-size: ${fs}pt; margin: 6px 0 4px 0; font-weight: bold; }")
         ss.addRule("a { color: $linkC; }")
         ss.addRule("code { font-family: 'JetBrains Mono', Consolas, monospace; font-size: ${fs - 1}pt; color: $inlineFg; background: $inlineBg; }")
-        ss.addRule("pre { font-family: 'JetBrains Mono', Consolas, monospace; font-size: ${fs - 1}pt; margin: 6px 0; padding: 8px; background: ${if (dark) "#1a1a1a" else "#f4f4f4"}; }")
-        ss.addRule("blockquote { border-left: 3px solid $borderC; padding-left: 10px; margin: 6px 0; color: ${if (dark) "#999" else "#666"}; }")
+        ss.addRule("pre { font-family: 'JetBrains Mono', Consolas, monospace; font-size: ${fs - 1}pt; margin: 6px 0; padding: 8px; background: $preBg; }")
+        ss.addRule("blockquote { border-left: 3px solid $borderC; padding-left: 10px; margin: 6px 0; color: $quoteFg; }")
         ss.addRule("ul, ol { margin: 4px 0; padding-left: 24px; }")
         ss.addRule("li { margin: 2px 0; }")
         ss.addRule("table { border-collapse: collapse; margin: 8px 0; width: 100%; border: 1px solid $borderC; }")
@@ -342,15 +379,16 @@ class SwingChatRenderer(
 
     private fun createCodeBlockPanel(code: String, lang: String?, filePath: String?, lineNum: Int?): JPanel {
         val dark = isDark()
+        val p = palette()
         val wrapper = JPanel(BorderLayout()).apply {
             border = BorderFactory.createLineBorder(
-                if (dark) Color(0x3d, 0x3d, 0x3d) else Color(0xd8, 0xd8, 0xd8), 1, true
+                p.codeBorder, 1, true
             )
-            background = if (dark) Color(0x1a, 0x1a, 0x1a) else Color(0xf4, 0xf4, 0xf4)
+            background = p.codeBg
         }
 
         val header = JPanel(BorderLayout()).apply {
-            background = if (dark) Color(0x1e, 0x1e, 0x2e) else Color(0xf0, 0xef, 0xf4)
+            background = p.codeHeaderBg
             border = JBUI.Borders.empty(4, 12)
             maximumSize = Dimension(Int.MAX_VALUE, 30)
         }
@@ -358,16 +396,16 @@ class SwingChatRenderer(
         val displayText = filePath ?: lang ?: ""
         val langLabel = JBLabel(displayText).apply {
             font = Font("JetBrains Mono", Font.BOLD, UIUtil.getLabelFont().size - 1)
-            foreground = if (dark) Color(0x88, 0x88, 0x88) else Color(0x77, 0x77, 0x77)
+            foreground = p.codeHeaderText
             if (filePath != null) {
                 cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 addMouseListener(object : MouseAdapter() {
                     override fun mouseClicked(e: MouseEvent) { openFile(filePath, lineNum ?: 0) }
                     override fun mouseEntered(e: MouseEvent) {
-                        foreground = if (isDark()) Color(0x6c, 0xb6, 0xff) else Color(0x15, 0x65, 0xc0)
+                        foreground = p.link
                     }
                     override fun mouseExited(e: MouseEvent) {
-                        foreground = if (isDark()) Color(0x88, 0x88, 0x88) else Color(0x77, 0x77, 0x77)
+                        foreground = p.codeHeaderText
                     }
                 })
             }
@@ -376,8 +414,8 @@ class SwingChatRenderer(
         val copyBtn = JButton("Copy").apply {
             font = UIUtil.getLabelFont().deriveFont(UIUtil.getLabelFont().size2D - 2f)
             isFocusPainted = false; isContentAreaFilled = false; isOpaque = true
-            background = if (dark) Color(0x35, 0x35, 0x45) else Color(0xe4, 0xe0, 0xf0)
-            foreground = if (dark) Color(0xaa, 0xaa, 0xaa) else Color(0x66, 0x66, 0x66)
+            background = if (dark) p.codeHeaderBg.darker() else p.codeHeaderBg
+            foreground = p.codeHeaderText
             border = JBUI.Borders.empty(2, 8)
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             val btn = this
@@ -399,17 +437,20 @@ class SwingChatRenderer(
         val editorComponent = createEditorForCode(code.trimEnd(), lang, filePath)
         wrapper.add(editorComponent, BorderLayout.CENTER)
 
-        return JPanel(BorderLayout()).apply {
+        return object : JPanel(BorderLayout()) {
+            override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+        }.apply {
             isOpaque = false
             border = JBUI.Borders.empty(6, 0)
             add(wrapper, BorderLayout.CENTER)
-            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+            alignmentX = Component.LEFT_ALIGNMENT
         }
     }
 
     private fun createEditorForCode(code: String, lang: String?, filePath: String?): JComponent {
         val proj = project ?: return createFallbackCodeArea(code)
         val language = resolveLanguage(lang, filePath)
+        val p = palette()
 
         return try {
             ApplicationManager.getApplication().runReadAction<JComponent> {
@@ -428,20 +469,34 @@ class SwingChatRenderer(
                         isCaretRowShown = false
                         isRightMarginShown = false
                         isAdditionalPageAtBottom = false
+                        isUseSoftWraps = false
                     }
                     editor.setBorder(JBUI.Borders.empty(6, 10))
                     editor.setCaretEnabled(false)
                     editor.colorsScheme = EditorColorsManager.getInstance().globalScheme
-                    editor.setBackgroundColor(
-                        if (isDark()) Color(0x1a, 0x1a, 0x1a) else Color(0xf4, 0xf4, 0xf4)
-                    )
+                    editor.setBackgroundColor(p.codeBg)
                 }
-                val lineCount = code.lines().size.coerceIn(1, 40)
-                val lineH = (UIUtil.getLabelFont().size + 5)
-                field.preferredSize = Dimension(0, lineCount * lineH + 16)
-                field.maximumSize = Dimension(Int.MAX_VALUE, lineCount * lineH + 16)
+                val lineCount = code.lines().size.coerceAtLeast(1)
+                val scheme = EditorColorsManager.getInstance().globalScheme
+                val lineH = maxOf(
+                    UIUtil.getLabelFont().size + 2,
+                    (scheme.editorFontSize * scheme.lineSpacing).roundToInt()
+                )
+                // Expand code blocks so vertical scrolling is handled by outer chat container.
+                val editorHeight = lineCount * lineH + JBUI.scale(12)
+                field.preferredSize = Dimension(0, editorHeight)
+                field.minimumSize = Dimension(0, editorHeight)
+                field.maximumSize = Dimension(Int.MAX_VALUE, editorHeight)
                 field.alignmentX = Component.LEFT_ALIGNMENT
-                field
+                JBScrollPane(field).apply {
+                    border = JBUI.Borders.empty()
+                    verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_NEVER
+                    horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED
+                    preferredSize = Dimension(0, editorHeight)
+                    minimumSize = Dimension(0, editorHeight)
+                    maximumSize = Dimension(Int.MAX_VALUE, editorHeight)
+                    alignmentX = Component.LEFT_ALIGNMENT
+                }
             }
         } catch (e: Exception) {
             log.warn("EditorTextField creation failed: ${e.message}")
@@ -450,12 +505,12 @@ class SwingChatRenderer(
     }
 
     private fun createFallbackCodeArea(code: String): JTextArea {
-        val dark = isDark()
+        val p = palette()
         return JTextArea(code).apply {
             isEditable = false
             font = Font("JetBrains Mono", Font.PLAIN, UIUtil.getLabelFont().size - 1)
-            background = if (dark) Color(0x1a, 0x1a, 0x1a) else Color(0xf4, 0xf4, 0xf4)
-            foreground = if (dark) Color(0xd4, 0xd4, 0xd4) else Color(0x33, 0x33, 0x33)
+            background = p.codeBg
+            foreground = p.textPrimary
             border = JBUI.Borders.empty(6, 10)
             lineWrap = false
         }
@@ -473,17 +528,18 @@ class SwingChatRenderer(
 
     private fun splitCodeBlocks(text: String): List<ContentPart> {
         val parts = mutableListOf<ContentPart>()
-        val pattern = Regex("```([^\\n]*?)\\n([\\s\\S]*?)```", RegexOption.MULTILINE)
+        // Support both ``` and ~~~ fenced code blocks.
+        val pattern = Regex("(?m)(^|\\n)(`{3,}|~{3,})([^\\n]*)\\n([\\s\\S]*?)\\n\\2(?=\\n|$)")
         var lastEnd = 0
 
         for (match in pattern.findAll(text)) {
             if (match.range.first > lastEnd) {
-                val before = text.substring(lastEnd, match.range.first).trim()
-                if (before.isNotEmpty()) parts.add(ContentPart(before))
+                val before = text.substring(lastEnd, match.range.first)
+                if (before.isNotBlank()) parts.add(ContentPart(before))
             }
 
-            val langLine = match.groupValues[1].trim()
-            val code = match.groupValues[2]
+            val langLine = match.groupValues[3].trim()
+            val code = match.groupValues[4]
             var lang: String? = null
             var filePath: String? = null
             var lineNum: Int? = null
@@ -505,8 +561,8 @@ class SwingChatRenderer(
         }
 
         if (lastEnd < text.length) {
-            val remaining = text.substring(lastEnd).trim()
-            if (remaining.isNotEmpty()) parts.add(ContentPart(remaining))
+            val remaining = text.substring(lastEnd)
+            if (remaining.isNotBlank()) parts.add(ContentPart(remaining))
         }
 
         if (parts.isEmpty()) parts.add(ContentPart(text))
@@ -515,12 +571,73 @@ class SwingChatRenderer(
 
     // ===== Utilities =====
 
-    private fun wrapMargin(inner: JComponent, top: Int = 8, bottom: Int = 8): JPanel = JPanel(BorderLayout()).apply {
+    private fun wrapMargin(inner: JComponent, top: Int = 8, bottom: Int = 8): JPanel = object : JPanel(BorderLayout()) {
+        override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+    }.apply {
         isOpaque = false
         border = JBUI.Borders.empty(top, 0, bottom, 0)
         add(inner, BorderLayout.CENTER)
-        maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         alignmentX = Component.LEFT_ALIGNMENT
+    }
+
+    private fun palette(): ThemePalette {
+        val dark = isDark()
+        val panelBg = UIUtil.getPanelBackground()
+        val textPrimary = UIUtil.getLabelForeground()
+        val textMuted = UIUtil.getLabelDisabledForeground()
+        val link = if (dark) Color(0x7d, 0xb3, 0xff) else Color(0x1a, 0x73, 0xe8)
+        val userBubble = if (dark) blend(panelBg, Color(0x6e, 0xa2, 0xff), 0.38) else blend(panelBg, link, 0.14)
+        val agentBubble = blend(panelBg, if (dark) Color.WHITE else Color.BLACK, if (dark) 0.07 else 0.03)
+        val thoughtAccent = blend(link, if (dark) Color(0xc8, 0x9a, 0xff) else Color(0x6d, 0x28, 0xd9), if (dark) 0.55 else 0.55)
+        val thoughtBg = if (dark) blend(panelBg, thoughtAccent, 0.34) else blend(panelBg, thoughtAccent, 0.10)
+        val toolAccent = blend(link, if (dark) Color(0xa6, 0xd1, 0xff) else Color(0x1f, 0x5f, 0xbf), if (dark) 0.20 else 0.45)
+        val toolBg = blend(panelBg, toolAccent, if (dark) 0.16 else 0.09)
+        val codeBg = blend(panelBg, if (dark) Color.BLACK else Color(0x2f, 0x3b, 0x4a), if (dark) 0.25 else 0.06)
+        val codeHeaderBg = blend(codeBg, if (dark) Color.WHITE else Color.BLACK, if (dark) 0.08 else 0.04)
+        val codeBorder = blend(codeBg, if (dark) Color.WHITE else Color.BLACK, if (dark) 0.20 else 0.18)
+        val inlineCodeBg = blend(codeBg, if (dark) Color(0xff, 0xb7, 0x64) else Color(0xff, 0xd8, 0xa8), if (dark) 0.18 else 0.35)
+        val inlineCodeText = if (dark) Color(0xff, 0xd4, 0x9a) else Color(0x8a, 0x4a, 0x00)
+        return ThemePalette(
+            panelBg = panelBg,
+            textPrimary = textPrimary,
+            textMuted = textMuted,
+            link = link,
+            userBubble = userBubble,
+            agentBubble = agentBubble,
+            thoughtBg = thoughtBg,
+            thoughtText = if (dark) Color(0xf0, 0xe8, 0xff) else Color(0x5e, 0x35, 0xb1),
+            thoughtAccent = thoughtAccent,
+            toolBg = toolBg,
+            toolText = if (dark) blend(textPrimary, toolAccent, 0.70) else Color(0x1f, 0x5f, 0xbf),
+            toolAccent = toolAccent,
+            codeBg = codeBg,
+            codeBorder = codeBorder,
+            codeHeaderBg = codeHeaderBg,
+            codeHeaderText = blend(textMuted, if (dark) Color.WHITE else Color.BLACK, if (dark) 0.20 else 0.10),
+            inlineCodeBg = inlineCodeBg,
+            inlineCodeText = inlineCodeText
+        )
+    }
+
+    private fun blend(a: Color, b: Color, ratio: Double): Color {
+        val r = ratio.coerceIn(0.0, 1.0)
+        val rr = (a.red + (b.red - a.red) * r).roundToInt().coerceIn(0, 255)
+        val gg = (a.green + (b.green - a.green) * r).roundToInt().coerceIn(0, 255)
+        val bb = (a.blue + (b.blue - a.blue) * r).roundToInt().coerceIn(0, 255)
+        return Color(rr, gg, bb)
+    }
+
+    private fun summarizeThoughtText(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return ""
+        val lines = trimmed.lines().filter { it.isNotBlank() }
+        val last = lines.lastOrNull() ?: return trimmed
+        return if (lines.size > 1) "... $last" else last
+    }
+
+    private fun singleLine(text: String, maxLength: Int): String {
+        val normalized = text.replace(Regex("\\s+"), " ").trim()
+        return if (normalized.length > maxLength) normalized.take(maxLength - 1) + "\u2026" else normalized
     }
 
     private fun resolveLanguage(lang: String?, filePath: String?): Language? {
@@ -559,7 +676,8 @@ class SwingChatRenderer(
         }
     }
 
-    private fun isDark() = !JBColor.isBright()
+    private fun isDark(): Boolean =
+        ChatHtmlBuilder.isDarkColor(UIUtil.getPanelBackground())
 
     override fun dispose() {}
 }
